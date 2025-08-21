@@ -12,7 +12,10 @@ for filename in files:
     input_path = f"../data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/{filename}"
     output_path = f"../data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/sm/{filename.replace('.tsv', '_sm.tsv')}"
 
-    with open(input_path, 'r', encoding='utf-8') as infile, open(output_path, 'w', encoding='utf-8') as outfile:
+    with (
+        open(input_path, "r", encoding="utf-8") as infile,
+        open(output_path, "w", encoding="utf-8") as outfile,
+    ):
         # Copy header
         header = infile.readline()
         outfile.write(header)
@@ -20,6 +23,7 @@ for filename in files:
         # Process each line
         for line in infile:
             parts = line.strip().split("\t")
+            print(parts)
             preds_str = parts[7]  # preds column is index 7
 
             # Parse the string as a Python list
