@@ -24,15 +24,7 @@ class SubregisterAnalyzer:
         """Load and initialize the embedding data"""
         self.pickle_path = pickle_path
 
-        # Create common results directory and subdirectory for this file
-        input_filename = Path(pickle_path).stem
-        self.results_base_dir = Path(results_base_dir)
-        self.results_base_dir.mkdir(exist_ok=True)
-        self.output_dir = self.results_base_dir / input_filename
-        self.output_dir.mkdir(exist_ok=True)
-
         print(f"Loading data from {pickle_path}...")
-        print(f"Output will be saved to: {self.output_dir}")
 
         with open(pickle_path, "rb") as f:
             self.data = pickle.load(f)
@@ -49,11 +41,20 @@ class SubregisterAnalyzer:
         print(f"Embedding dimension: {self.embeddings.shape[1]}")
         print(f"Register: {Counter(self.labels)}")
 
-        # Check minimum size requirement
+        # Check minimum size requirement BEFORE creating directories
         if len(self.embeddings) < 1000:
             raise ValueError(
                 f"Dataset too small ({len(self.embeddings)} documents). Minimum 1000 required."
             )
+
+        # Only create directories if dataset is large enough
+        input_filename = Path(pickle_path).stem
+        self.results_base_dir = Path(results_base_dir)
+        self.results_base_dir.mkdir(exist_ok=True)
+        self.output_dir = self.results_base_dir / input_filename
+        self.output_dir.mkdir(exist_ok=True)
+
+        print(f"Output will be saved to: {self.output_dir}")
 
         # Normalize embeddings for cosine similarity
         self.embeddings_norm = self.embeddings / np.linalg.norm(
@@ -84,8 +85,14 @@ class SubregisterAnalyzer:
         """Build k-nearest neighbor graph"""
         # Auto-compute k based on dataset size if not provided
         if k is None:
-            k = int(np.sqrt(len(self.embeddings)))
-            k = max(10, min(k, 100))  # Clamp between 10 and 100
+            # Use a more conservative formula for large datasets
+            if len(self.embeddings) < 5000:
+                k = int(np.sqrt(len(self.embeddings)))
+            else:
+                # For large datasets, use log-based scaling
+                k = int(10 * np.log10(len(self.embeddings)))
+
+            k = max(15, min(k, 50))  # Clamp between 15 and 50
 
         print(f"Building {k}-NN graph for {len(self.embeddings)} documents...")
 
@@ -216,20 +223,20 @@ class SubregisterAnalyzer:
         # Save optimization results
         optimization_file = self.output_dir / "resolution_optimization.txt"
         with open(optimization_file, "w", encoding="utf-8") as f:
-            f.write("RESOLUTION OPTIMIZATION RESULTS\\n")
-            f.write("=" * 40 + "\\n\\n")
-            f.write(f"Optimal Resolution: {optimal_resolution}\\n")
-            f.write(f"Optimal Silhouette Score: {optimal_score:.3f}\\n")
+            f.write("RESOLUTION OPTIMIZATION RESULTS\n")
+            f.write("=" * 40 + "\n\n")
+            f.write(f"Optimal Resolution: {optimal_resolution}\n")
+            f.write(f"Optimal Silhouette Score: {optimal_score:.3f}\n")
             f.write(
-                f"Number of Communities: {resolution_scores[optimal_resolution]['n_communities']}\\n\\n"
+                f"Number of Communities: {resolution_scores[optimal_resolution]['n_communities']}\n\n"
             )
-            f.write("All Tested Resolutions:\\n")
+            f.write("All Tested Resolutions:\n")
             for res in sorted(resolution_scores.keys()):
                 score = resolution_scores[res]["silhouette"]
                 n_comm = resolution_scores[res]["n_communities"]
                 marker = " <- OPTIMAL" if res == optimal_resolution else ""
                 f.write(
-                    f"  {res}: {score:.3f} silhouette, {n_comm} communities{marker}\\n"
+                    f"  {res}: {score:.3f} silhouette, {n_comm} communities{marker}\n"
                 )
 
         print(f"Resolution optimization results saved to: {optimization_file}")
@@ -262,7 +269,7 @@ class SubregisterAnalyzer:
             coherence = np.mean(upper_triangle[upper_triangle > 0])
             coherence_scores[community_id] = coherence
 
-        analysis_text = f"\\n=== COMMUNITY ANALYSIS (resolution={resolution}) ===\\n"
+        analysis_text = f"\n=== COMMUNITY ANALYSIS (resolution={resolution}) ===\n"
         print(analysis_text)
 
         # Save analysis to file
@@ -275,7 +282,7 @@ class SubregisterAnalyzer:
                 members = np.where(communities == community_id)[0]
                 coherence_score = coherence_scores.get(community_id, 0.0)
 
-                section = f"\\n--- Community {community_id} ({len(members)} documents, coherence: {coherence_score:.3f}) ---\\n"
+                section = f"\n--- Community {community_id} ({len(members)} documents, coherence: {coherence_score:.3f}) ---\n"
                 print(section)
                 f.write(section)
 
@@ -289,9 +296,9 @@ class SubregisterAnalyzer:
                     doc_preds = self.preds[idx]
                     # Escape newlines and save full text
                     full_text = (
-                        self.texts[idx].replace("\\n", "\\\\n").replace("\\r", "\\\\r")
+                        self.texts[idx].replace("\n", "\\n").replace("\r", "\\r")
                     )
-                    line = f"{i + 1}. [{idx}] {doc_preds} {full_text}\\n"
+                    line = f"{i + 1}. [{idx}] {doc_preds} {full_text}\n"
                     # For console output, show predictions and truncated text
                     truncated_text = (
                         self.texts[idx][:100] + "..."
@@ -302,7 +309,7 @@ class SubregisterAnalyzer:
                     f.write(line)
 
                 if len(members) > top_n:
-                    remaining = f"... and {len(members) - top_n} more documents\\n"
+                    remaining = f"... and {len(members) - top_n} more documents\n"
                     print(remaining.strip())
                     f.write(remaining)
 
@@ -315,7 +322,7 @@ class SubregisterAnalyzer:
 
         print(f"Computing community coherence scores (resolution={resolution})...")
 
-        coherence_text = f"Community Coherence Scores (resolution={resolution}):\\n"
+        coherence_text = f"Community Coherence Scores (resolution={resolution}):\n"
 
         for community_id in set(communities):
             members = np.where(communities == community_id)[0]
@@ -334,11 +341,11 @@ class SubregisterAnalyzer:
             coherence_scores[community_id] = coherence
 
         # Print and save results
-        print(f"\\nCommunity Coherence Scores (resolution={resolution}):")
+        print(f"\nCommunity Coherence Scores (resolution={resolution}):")
         for community_id, score in sorted(coherence_scores.items()):
             line = f"Community {community_id}: {score:.3f}"
             print(line)
-            coherence_text += line + "\\n"
+            coherence_text += line + "\n"
 
         # Save coherence scores
         coherence_file = self.output_dir / f"coherence_scores_res_{resolution}.txt"
@@ -381,21 +388,21 @@ class SubregisterAnalyzer:
             )
             print(f"\\nPer-Community Silhouette Scores (resolution={resolution}):")
 
-            silhouette_text = f"SILHOUETTE ANALYSIS (resolution={resolution})\\n"
-            silhouette_text += f"==================\\n\\n"
-            silhouette_text += f"Overall Silhouette Score: {overall_silhouette:.3f}\\n"
-            silhouette_text += f"Interpretation:\\n"
-            silhouette_text += f"  > 0.7: Strong cluster structure\\n"
-            silhouette_text += f"  > 0.5: Reasonable cluster structure\\n"
-            silhouette_text += f"  > 0.3: Weak but acceptable structure\\n"
-            silhouette_text += f"  < 0.3: Poor cluster structure\\n"
-            silhouette_text += f"  < 0.0: Documents may be in wrong clusters\\n\\n"
-            silhouette_text += f"Per-Community Silhouette Scores:\\n"
+            silhouette_text = f"SILHOUETTE ANALYSIS (resolution={resolution})\n"
+            silhouette_text += f"==================\n\n"
+            silhouette_text += f"Overall Silhouette Score: {overall_silhouette:.3f}\n"
+            silhouette_text += f"Interpretation:\n"
+            silhouette_text += f"  > 0.7: Strong cluster structure\n"
+            silhouette_text += f"  > 0.5: Reasonable cluster structure\n"
+            silhouette_text += f"  > 0.3: Weak but acceptable structure\n"
+            silhouette_text += f"  < 0.3: Poor cluster structure\n"
+            silhouette_text += f"  < 0.0: Documents may be in wrong clusters\n\n"
+            silhouette_text += f"Per-Community Silhouette Scores:\n"
 
             for community_id, score in sorted(community_silhouettes.items()):
                 line = f"Community {community_id}: {score:.3f}"
                 print(line)
-                silhouette_text += line + "\\n"
+                silhouette_text += line + "\n"
 
             # Save silhouette scores
             silhouette_file = (
@@ -470,7 +477,7 @@ class SubregisterAnalyzer:
                     )
 
             plt.title(
-                f"UMAP Visualization of Communities (resolution={resolution})\\nNumbers show Community IDs"
+                f"UMAP Visualization of Communities (resolution={resolution})\nNumbers show Community IDs"
             )
             plt.xlabel("UMAP 1")
             plt.ylabel("UMAP 2")
@@ -558,19 +565,19 @@ class SubregisterAnalyzer:
             # Save summary info
             summary_file = self.output_dir / "analysis_summary.txt"
             with open(summary_file, "w", encoding="utf-8") as f:
-                f.write("SUBREGISTER DISCOVERY ANALYSIS SUMMARY\\n")
-                f.write("=" * 60 + "\\n\\n")
-                f.write(f"Input file: {self.pickle_path}\\n")
-                f.write(f"Number of documents: {len(self.embeddings)}\\n")
-                f.write(f"Embedding dimension: {self.embeddings.shape[1]}\\n")
-                f.write(f"Register distribution: {dict(Counter(self.labels))}\\n")
-                f.write(f"k-NN parameter: auto-computed\\n")
-                f.write(f"Optimal resolution: {optimal_resolution}\\n")
+                f.write("SUBREGISTER DISCOVERY ANALYSIS SUMMARY\n")
+                f.write("=" * 60 + "\n\n")
+                f.write(f"Input file: {self.pickle_path}\n")
+                f.write(f"Number of documents: {len(self.embeddings)}\n")
+                f.write(f"Embedding dimension: {self.embeddings.shape[1]}\n")
+                f.write(f"Register distribution: {dict(Counter(self.labels))}\n")
+                f.write(f"k-NN parameter: auto-computed\n")
+                f.write(f"Optimal resolution: {optimal_resolution}\n")
                 f.write(
-                    f"Optimal silhouette score: {all_scores[optimal_resolution]['silhouette']:.3f}\\n"
+                    f"Optimal silhouette score: {all_scores[optimal_resolution]['silhouette']:.3f}\n"
                 )
                 f.write(
-                    f"Number of communities: {all_scores[optimal_resolution]['n_communities']}\\n\\n"
+                    f"Number of communities: {all_scores[optimal_resolution]['n_communities']}\n\n"
                 )
 
             # Step 4: Full analysis at optimal resolution
@@ -593,7 +600,7 @@ class SubregisterAnalyzer:
             except Exception as e:
                 print(f"Skipping UMAP visualization due to error: {e}")
 
-            print("\\n" + "=" * 60)
+            print("\n" + "=" * 60)
             print("ANALYSIS COMPLETE")
             print(f"Optimal resolution: {optimal_resolution}")
             print(f"All results saved to: {self.output_dir}")
@@ -626,9 +633,9 @@ if __name__ == "__main__":
     for i, file in enumerate(pkl_files, 1):
         print(f"{i}. {os.path.basename(file)}")
 
-    print(f"\\nAll results will be saved to: {results_dir}/")
+    print(f"\nAll results will be saved to: {results_dir}/")
 
-    print("\\n" + "=" * 80)
+    print("\n" + "=" * 80)
     print("PROCESSING ALL PKL FILES")
     print("=" * 80)
 
@@ -678,25 +685,25 @@ if __name__ == "__main__":
             gc.collect()
 
     # Final summary
-    print("\\n" + "=" * 80)
+    print("\n" + "=" * 80)
     print("BATCH PROCESSING COMPLETE")
     print("=" * 80)
     print(f"Successfully processed: {successful_analyses}/{len(pkl_files)} files")
 
     if skipped_files:
-        print(f"\\nSkipped files ({len(skipped_files)}):")
+        print(f"\nSkipped files ({len(skipped_files)}):")
         for file, reason in skipped_files:
             print(f"  ⚠ {os.path.basename(file)}: {reason}")
 
     if failed_analyses:
-        print(f"\\nFailed analyses ({len(failed_analyses)}):")
+        print(f"\nFailed analyses ({len(failed_analyses)}):")
         for file, error in failed_analyses:
             print(f"  ✗ {os.path.basename(file)}: {error}")
 
     if successful_analyses + len(skipped_files) == len(pkl_files):
         print("All eligible files processed successfully! ✓")
 
-    print(f"\\nResults organized in: {results_dir}/")
+    print(f"\nResults organized in: {results_dir}/")
 
     # List created subdirectories
     if os.path.exists(results_dir):
@@ -710,4 +717,4 @@ if __name__ == "__main__":
             for subdir in sorted(subdirs):
                 print(f"  - {results_dir}/{subdir}/")
 
-    print("\\nAnalysis completed with cleanup.")
+    print("\nAnalysis completed with cleanup.")
