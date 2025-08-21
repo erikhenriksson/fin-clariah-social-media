@@ -23,13 +23,15 @@ warnings.filterwarnings("ignore")
 
 
 class SubregisterAnalyzer:
-    def __init__(self, pickle_path):
+    def __init__(self, pickle_path, results_base_dir="subregister_results"):
         """Load and initialize the embedding data"""
         self.pickle_path = pickle_path
 
-        # Create output directory named after input file
+        # Create common results directory and subdirectory for this file
         input_filename = Path(pickle_path).stem  # removes extension
-        self.output_dir = Path(f"analysis_{input_filename}")
+        self.results_base_dir = Path(results_base_dir)
+        self.results_base_dir.mkdir(exist_ok=True)
+        self.output_dir = self.results_base_dir / input_filename
         self.output_dir.mkdir(exist_ok=True)
 
         print(f"Loading data from {pickle_path}...")
@@ -472,24 +474,86 @@ class SubregisterAnalyzer:
 
 # Usage example
 if __name__ == "__main__":
-    try:
-        # Initialize analyzer
-        analyzer = SubregisterAnalyzer(
-            "../data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/sm/fi_embeds_ID.pkl"
-        )
+    import glob
 
-        # Run simplified analysis (auto-computed k)
-        analyzer.run_full_analysis()
+    # Find all pkl files in the directory
+    pkl_directory = "../data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/sm/"
+    pkl_files = glob.glob(os.path.join(pkl_directory, "*.pkl"))
 
-    except Exception as e:
-        print(f"Fatal error: {e}")
-        import traceback
+    # Create common results directory
+    results_dir = "subregister_results"
+    Path(results_dir).mkdir(exist_ok=True)
 
-        traceback.print_exc()
-    finally:
-        # Final cleanup
-        plt.close("all")
-        import gc
+    print(f"Found {len(pkl_files)} pkl files to process:")
+    for i, file in enumerate(pkl_files, 1):
+        print(f"{i}. {os.path.basename(file)}")
 
-        gc.collect()
-        print("Analysis completed with cleanup.")
+    print(f"\nAll results will be saved to: {results_dir}/")
+
+    print("\n" + "=" * 80)
+    print("PROCESSING ALL PKL FILES")
+    print("=" * 80)
+
+    successful_analyses = 0
+    failed_analyses = []
+
+    for i, pkl_file in enumerate(pkl_files, 1):
+        try:
+            print(f"\n{'=' * 60}")
+            print(f"PROCESSING FILE {i}/{len(pkl_files)}: {os.path.basename(pkl_file)}")
+            print(f"{'=' * 60}")
+
+            # Initialize analyzer for this file (with common results dir)
+            analyzer = SubregisterAnalyzer(pkl_file, results_base_dir=results_dir)
+
+            # Run analysis
+            analyzer.run_full_analysis()
+
+            successful_analyses += 1
+            print(f"✓ Successfully completed analysis for {os.path.basename(pkl_file)}")
+
+        except Exception as e:
+            print(f"✗ Error processing {os.path.basename(pkl_file)}: {e}")
+            failed_analyses.append((pkl_file, str(e)))
+
+            # Print traceback for debugging
+            import traceback
+
+            traceback.print_exc()
+            continue
+
+        finally:
+            # Cleanup between files
+            plt.close("all")
+            import gc
+
+            gc.collect()
+
+    # Final summary
+    print("\n" + "=" * 80)
+    print("BATCH PROCESSING COMPLETE")
+    print("=" * 80)
+    print(f"Successfully processed: {successful_analyses}/{len(pkl_files)} files")
+
+    if failed_analyses:
+        print(f"\nFailed analyses ({len(failed_analyses)}):")
+        for file, error in failed_analyses:
+            print(f"  ✗ {os.path.basename(file)}: {error}")
+    else:
+        print("All files processed successfully! ✓")
+
+    print(f"\nResults organized in: {results_dir}/")
+
+    # List created subdirectories
+    if os.path.exists(results_dir):
+        subdirs = [
+            d
+            for d in os.listdir(results_dir)
+            if os.path.isdir(os.path.join(results_dir, d))
+        ]
+        if subdirs:
+            print("Subdirectories created:")
+            for subdir in sorted(subdirs):
+                print(f"  - {results_dir}/{subdir}/")
+
+    print("\nAnalysis completed with cleanup.")
