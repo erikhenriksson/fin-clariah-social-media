@@ -2,15 +2,15 @@ import ast
 import os
 
 # Create output directory
-os.makedirs("data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/sm", exist_ok=True)
+os.makedirs("../data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/sm", exist_ok=True)
 
 # Process each file
 files = ["en_embeds.tsv", "fi_embeds.tsv", "sv_embeds.tsv"]
 target_values = {"ID", "NB", "OB"}
 
 for filename in files:
-    input_path = f"data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/{filename}"
-    output_path = f"data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/sm/{filename.replace('.tsv', '_sm.tsv')}"
+    input_path = f"../data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/{filename}"
+    output_path = f"../data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/sm/{filename.replace('.tsv', '_sm.tsv')}"
 
     with (
         open(input_path, "r", encoding="utf-8") as infile,
