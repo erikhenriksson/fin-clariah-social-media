@@ -2,6 +2,9 @@ import ast
 import csv
 import os
 
+# Increase field size limit for large embeddings
+csv.field_size_limit(10**7)  # 10MB limit
+
 # Create output directory
 os.makedirs("../data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/sm", exist_ok=True)
 
