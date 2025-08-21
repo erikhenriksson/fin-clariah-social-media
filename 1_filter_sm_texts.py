@@ -13,7 +13,7 @@ for filename in files:
     output_path = f"../data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/sm/{filename.replace('.tsv', '_sm.tsv')}"
 
     with (
-        open(input_path, "r", encoding="utf-8") as infile,
+        open(input_path, "r", encoding="utf-8") as infile, \
         open(output_path, "w", encoding="utf-8") as outfile,
     ):
         # Copy header
