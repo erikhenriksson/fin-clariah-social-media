@@ -15,7 +15,7 @@ import umap
 from scipy.spatial.distance import cosine
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.decomposition import PCA
-from sklearn.metrics import pairwise_distances
+from sklearn.metrics import silhouette_samples, silhouette_score
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.neighbors import NearestNeighbors
 
@@ -43,6 +43,7 @@ class SubregisterAnalyzer:
         # Extract embeddings and metadata
         self.embeddings = np.array([row["embed_last"] for row in self.data])
         self.texts = [row["text"] for row in self.data]
+        self.preds = [row["preds"] for row in self.data]  # Keep full predictions list
         self.labels = [
             row["preds"][0] if row["preds"] else "unknown" for row in self.data
         ]
@@ -321,16 +322,20 @@ class SubregisterAnalyzer:
                 )
 
                 for i, idx in enumerate(sample_indices):
+                    # Get full predictions for this document
+                    doc_preds = self.preds[idx]
                     # Escape newlines and save full text
                     full_text = (
                         self.texts[idx].replace("\n", "\\n").replace("\r", "\\r")
                     )
-                    line = f"{i + 1}. [{idx}] {full_text}\n"
-                    print(
-                        f"{i + 1}. [{idx}] {self.texts[idx][:100]}..."
+                    line = f"{i + 1}. [{idx}] {doc_preds} {full_text}\n"
+                    # For console output, show predictions and truncated text
+                    truncated_text = (
+                        self.texts[idx][:100] + "..."
                         if len(self.texts[idx]) > 100
-                        else f"{i + 1}. [{idx}] {self.texts[idx]}"
+                        else self.texts[idx]
                     )
+                    print(f"{i + 1}. [{idx}] {doc_preds} {truncated_text}")
                     f.write(line)
 
                 if len(members) > top_n:
@@ -378,7 +383,136 @@ class SubregisterAnalyzer:
             f.write(coherence_text)
         print(f"Coherence scores saved to: {coherence_file}")
 
-        return coherence_scores
+    def compute_silhouette_analysis(self):
+        """Compute silhouette scores for community validation"""
+        communities = self.community_results[1.0]
+
+        print("Computing silhouette scores...")
+
+        # Overall silhouette score
+        try:
+            # Use cosine distance for silhouette computation
+            overall_silhouette = silhouette_score(
+                self.embeddings_pca_norm, communities, metric="cosine"
+            )
+
+            # Individual silhouette scores for each document
+            sample_silhouette_values = silhouette_samples(
+                self.embeddings_pca_norm, communities, metric="cosine"
+            )
+
+            # Compute average silhouette score per community
+            community_silhouettes = {}
+            for community_id in sorted(set(communities)):
+                mask = communities == community_id
+                if np.sum(mask) > 1:  # Need at least 2 documents
+                    community_avg = np.mean(sample_silhouette_values[mask])
+                    community_silhouettes[community_id] = community_avg
+                else:
+                    community_silhouettes[community_id] = 0.0
+
+            # Print results
+            print(f"\nOverall Silhouette Score: {overall_silhouette:.3f}")
+            print("\nPer-Community Silhouette Scores:")
+
+            silhouette_text = f"SILHOUETTE ANALYSIS\n"
+            silhouette_text += f"==================\n\n"
+            silhouette_text += f"Overall Silhouette Score: {overall_silhouette:.3f}\n"
+            silhouette_text += f"Interpretation:\n"
+            silhouette_text += f"  > 0.7: Strong cluster structure\n"
+            silhouette_text += f"  > 0.5: Reasonable cluster structure\n"
+            silhouette_text += f"  > 0.3: Weak but acceptable structure\n"
+            silhouette_text += f"  < 0.3: Poor cluster structure\n"
+            silhouette_text += f"  < 0.0: Documents may be in wrong clusters\n\n"
+            silhouette_text += f"Per-Community Silhouette Scores:\n"
+
+            for community_id, score in sorted(community_silhouettes.items()):
+                line = f"Community {community_id}: {score:.3f}"
+                print(line)
+                silhouette_text += line + "\n"
+
+            # Save silhouette scores
+            silhouette_file = self.output_dir / "silhouette_analysis.txt"
+            with open(silhouette_file, "w", encoding="utf-8") as f:
+                f.write(silhouette_text)
+            print(f"\nSilhouette analysis saved to: {silhouette_file}")
+
+            # Create silhouette plot
+            self._plot_silhouette_analysis(
+                communities, sample_silhouette_values, overall_silhouette
+            )
+
+            return overall_silhouette, community_silhouettes, sample_silhouette_values
+
+        except Exception as e:
+            print(f"Error computing silhouette scores: {e}")
+            return None, {}, None
+
+    def _plot_silhouette_analysis(
+        self, communities, sample_silhouette_values, overall_silhouette
+    ):
+        """Create silhouette plot visualization"""
+        try:
+            fig, ax = plt.subplots(figsize=(12, 8))
+
+            unique_communities = sorted(set(communities))
+            n_communities = len(unique_communities)
+
+            y_lower = 10
+
+            # Color map for communities
+            colors = plt.cm.tab20(np.linspace(0, 1, n_communities))
+
+            for i, community_id in enumerate(unique_communities):
+                # Get silhouette scores for this community
+                community_mask = communities == community_id
+                community_silhouette_values = sample_silhouette_values[community_mask]
+                community_silhouette_values.sort()
+
+                size_cluster = community_silhouette_values.shape[0]
+                y_upper = y_lower + size_cluster
+
+                color = colors[i]
+                ax.fill_betweenx(
+                    np.arange(y_lower, y_upper),
+                    0,
+                    community_silhouette_values,
+                    facecolor=color,
+                    edgecolor=color,
+                    alpha=0.7,
+                )
+
+                # Label the silhouette plots with their cluster numbers at the middle
+                ax.text(-0.05, y_lower + 0.5 * size_cluster, str(community_id))
+
+                # Compute the new y_lower for next plot
+                y_lower = y_upper + 10
+
+            ax.set_xlabel("Silhouette Coefficient Values")
+            ax.set_ylabel("Community ID")
+            ax.set_title(
+                f"Silhouette Plot for Communities\nOverall Score: {overall_silhouette:.3f}"
+            )
+
+            # Vertical line for average silhouette score
+            ax.axvline(
+                x=overall_silhouette,
+                color="red",
+                linestyle="--",
+                label=f"Overall Score: {overall_silhouette:.3f}",
+            )
+            ax.legend()
+
+            # Save plot
+            plot_path = self.output_dir / "silhouette_plot.png"
+            plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+            plt.close()
+
+            print(f"Silhouette plot saved to: {plot_path}")
+
+        except Exception as e:
+            print(f"Error creating silhouette plot: {e}")
+            plt.close("all")
 
     def hierarchical_clustering_comparison(self, n_clusters_range=[5, 10, 15, 20]):
         """Compare with hierarchical clustering for validation"""
