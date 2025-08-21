@@ -447,7 +447,7 @@ class SubregisterAnalyzer:
                 c=communities_vis,
                 cmap="tab20",
                 alpha=0.7,
-                s=8,
+                s=6,
             )
             plt.colorbar(scatter, label="Community ID")
 
