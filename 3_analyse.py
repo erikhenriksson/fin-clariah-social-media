@@ -4,13 +4,14 @@ import warnings
 from collections import Counter
 from pathlib import Path
 
+import igraph as ig
+import leidenalg as la
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import umap
-from community import community_louvain
 from scipy.spatial.distance import cosine
 from sklearn.cluster import AgglomerativeClustering
 from sklearn.decomposition import PCA
@@ -104,20 +105,38 @@ class SubregisterAnalyzer:
         )
         return self.graph
 
-    def detect_communities_louvain(self, resolution=1.0):
-        """Detect communities using Louvain algorithm"""
-        print(f"Detecting communities with Louvain (resolution={resolution})...")
+    def detect_communities_leiden(self, resolution=1.0):
+        """Detect communities using Leiden algorithm"""
+        print(f"Detecting communities with Leiden (resolution={resolution})...")
 
-        # Create weighted graph for community detection
-        partition = community_louvain.best_partition(
-            self.graph, resolution=resolution, random_state=42
+        # Convert NetworkX graph to igraph format (required for Leiden)
+        edge_list = list(self.graph.edges(data=True))
+
+        # Create igraph from edge list
+        g = ig.Graph()
+        g.add_vertices(self.graph.number_of_nodes())
+
+        # Add edges with weights
+        edges = [(u, v) for u, v, _ in edge_list]
+        weights = [d["weight"] for u, v, d in edge_list]
+
+        g.add_edges(edges)
+        g.es["weight"] = weights
+
+        # Run Leiden algorithm
+        partition = la.find_partition(
+            g,
+            la.RBConfigurationVertexPartition,
+            resolution_parameter=resolution,
+            seed=42,
         )
 
-        # Convert to array format
-        communities = np.array([partition[i] for i in range(len(self.embeddings))])
+        # Convert partition to array format
+        communities = np.array(partition.membership)
 
         n_communities = len(set(communities))
         print(f"Found {n_communities} communities")
+        print(f"Modularity: {partition.modularity:.3f}")
 
         # Community sizes
         community_sizes = Counter(communities)
@@ -129,7 +148,7 @@ class SubregisterAnalyzer:
         """Run community detection at resolution=1.0 only"""
         print("Running community detection at resolution=1.0...")
 
-        communities = self.detect_communities_louvain(resolution=1.0)
+        communities = self.detect_communities_leiden(resolution=1.0)
         self.community_results = {1.0: communities}
 
         return self.community_results
@@ -253,9 +272,29 @@ class SubregisterAnalyzer:
             print(f"Error creating community legend: {e}")
             plt.close("all")
 
-    def analyze_communities(self, top_n=5):
+    def analyze_communities(self, top_n=10):
         """Analyze and sample documents from each community"""
         communities = self.community_results[1.0]
+
+        # First compute coherence scores for all communities
+        print("Computing coherence scores for community analysis...")
+        coherence_scores = {}
+
+        for community_id in set(communities):
+            members = np.where(communities == community_id)[0]
+
+            if len(members) < 2:
+                coherence_scores[community_id] = 0.0
+                continue
+
+            # Compute average pairwise cosine similarity within community
+            community_embeddings = self.embeddings_pca_norm[members]
+            similarity_matrix = cosine_similarity(community_embeddings)
+
+            # Get upper triangle (excluding diagonal)
+            upper_triangle = np.triu(similarity_matrix, k=1)
+            coherence = np.mean(upper_triangle[upper_triangle > 0])
+            coherence_scores[community_id] = coherence
 
         analysis_text = f"\n=== COMMUNITY ANALYSIS (resolution=1.0) ===\n"
         print(analysis_text)
@@ -268,10 +307,9 @@ class SubregisterAnalyzer:
 
             for community_id in sorted(set(communities)):
                 members = np.where(communities == community_id)[0]
+                coherence_score = coherence_scores.get(community_id, 0.0)
 
-                section = (
-                    f"\n--- Community {community_id} ({len(members)} documents) ---\n"
-                )
+                section = f"\n--- Community {community_id} ({len(members)} documents, coherence: {coherence_score:.3f}) ---\n"
                 print(section)
                 f.write(section)
 
@@ -281,13 +319,16 @@ class SubregisterAnalyzer:
                 )
 
                 for i, idx in enumerate(sample_indices):
-                    text_preview = (
-                        self.texts[idx][:200] + "..."
-                        if len(self.texts[idx]) > 200
-                        else self.texts[idx]
+                    # Escape newlines and save full text
+                    full_text = (
+                        self.texts[idx].replace("\n", "\\n").replace("\r", "\\r")
                     )
-                    line = f"{i + 1}. [{idx}] {text_preview}\n"
-                    print(line.strip())
+                    line = f"{i + 1}. [{idx}] {full_text}\n"
+                    print(
+                        f"{i + 1}. [{idx}] {self.texts[idx][:100]}..."
+                        if len(self.texts[idx]) > 100
+                        else f"{i + 1}. [{idx}] {self.texts[idx]}"
+                    )
                     f.write(line)
 
                 if len(members) > top_n:
