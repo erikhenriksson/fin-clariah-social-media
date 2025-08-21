@@ -72,9 +72,14 @@ class SubregisterAnalyzer:
         print(f"First 10 components explain: {first_10_variance:.3f} of total variance")
         return self.embeddings_pca_norm
 
-    def build_knn_graph(self, k=30, use_pca=True):
+    def build_knn_graph(self, k=None, use_pca=True):
         """Build k-nearest neighbor graph"""
-        print(f"Building {k}-NN graph...")
+        # Auto-compute k based on dataset size if not provided
+        if k is None:
+            k = int(np.sqrt(len(self.embeddings)))
+            k = max(10, min(k, 100))  # Clamp between 10 and 100
+
+        print(f"Building {k}-NN graph for {len(self.embeddings)} documents...")
 
         embeddings = self.embeddings_pca_norm if use_pca else self.embeddings_norm
 
@@ -363,7 +368,7 @@ class SubregisterAnalyzer:
             f.write(comparison_text)
         print(f"Hierarchical clustering comparison saved to: {comparison_file}")
 
-    def run_full_analysis(self, k=30):
+    def run_full_analysis(self):
         """Run the complete subregister discovery pipeline"""
         try:
             print("=" * 60)
@@ -379,14 +384,14 @@ class SubregisterAnalyzer:
                 f.write(f"Number of documents: {len(self.embeddings)}\n")
                 f.write(f"Embedding dimension: {self.embeddings.shape[1]}\n")
                 f.write(f"Register distribution: {dict(Counter(self.labels))}\n")
-                f.write(f"k-NN parameter: {k}\n")
+                f.write(f"k-NN parameter: auto-computed\n")
                 f.write(f"Resolution: 1.0\n\n")
 
             # Step 1: Dimensionality reduction
             self.reduce_dimensions()
 
-            # Step 2: Build k-NN graph
-            self.build_knn_graph(k=k)
+            # Step 2: Build k-NN graph (auto-compute k)
+            self.build_knn_graph()
 
             # Step 3: Community detection at resolution=1.0
             self.multi_resolution_analysis()
@@ -432,8 +437,8 @@ if __name__ == "__main__":
             "../data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/sm/en_embeds_ID.pkl"
         )
 
-        # Run simplified analysis (resolution=1.0 only)
-        analyzer.run_full_analysis(k=30)
+        # Run simplified analysis (auto-computed k)
+        analyzer.run_full_analysis()
 
     except Exception as e:
         print(f"Fatal error: {e}")
