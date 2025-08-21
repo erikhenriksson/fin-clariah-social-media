@@ -475,7 +475,7 @@ if __name__ == "__main__":
     try:
         # Initialize analyzer
         analyzer = SubregisterAnalyzer(
-            "../data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/sm/en_embeds_ID.pkl"
+            "../data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/sm/fi_embeds_ID.pkl"
         )
 
         # Run simplified analysis (auto-computed k)
