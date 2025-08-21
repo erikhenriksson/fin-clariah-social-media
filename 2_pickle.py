@@ -26,7 +26,18 @@ for filename in files:
         header = next(reader)
 
         # Process each row
+        row_count = 0
         for row in reader:
+            row_count += 1
+
+            # Debug info
+            print(f"Row {row_count}: has {len(row)} columns, expected {len(header)}")
+            print(f"Header columns: {header}")
+            if len(row) != len(header):
+                print(f"PROBLEM ROW {row_count}: {row[:5]}...")  # Show first 5 fields
+                print("Stopping here to debug")
+                break
+
             preds_str = row[header.index("preds")]
             preds_list = ast.literal_eval(preds_str)
 
