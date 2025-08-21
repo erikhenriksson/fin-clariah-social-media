@@ -241,13 +241,47 @@ class SubregisterAnalyzer:
 
         print(f"Resolution optimization results saved to: {optimization_file}")
 
-        return optimal_resolution, optimal_communities, resolution_scores
+    def compute_coherence_for_communities(self, communities):
+        """Compute coherence scores for a set of communities (memory-efficient)"""
+        coherence_scores = {}
+
+        for community_id in set(communities):
+            members = np.where(communities == community_id)[0]
+
+            if len(members) < 2:
+                coherence_scores[community_id] = 0.0
+                continue
+
+            # Memory-efficient coherence computation for large communities
+            if len(members) > 1000:
+                # Sample for large communities to avoid memory issues
+                sample_size = min(500, len(members))
+                sample_members = np.random.choice(members, sample_size, replace=False)
+                community_embeddings = self.embeddings_pca_norm[sample_members]
+            else:
+                community_embeddings = self.embeddings_pca_norm[members]
+
+            # Compute average pairwise cosine similarity within community
+            similarity_matrix = cosine_similarity(community_embeddings)
+
+            # Get upper triangle (excluding diagonal)
+            upper_triangle = np.triu(similarity_matrix, k=1)
+            coherence = np.mean(upper_triangle[upper_triangle > 0])
+            coherence_scores[community_id] = coherence
+
+            # Clear memory immediately
+            del similarity_matrix, upper_triangle, community_embeddings
+            import gc
+
+            gc.collect()
+
+        return coherence_scores
 
     def analyze_communities(self, resolution, top_n=10):
         """Analyze and sample documents from each community"""
         communities = self.community_results[resolution]
 
-        # Compute coherence scores for all communities
+        # Compute coherence scores for all communities (memory-efficient)
         print(
             f"Computing coherence scores for community analysis (resolution={resolution})..."
         )
@@ -260,14 +294,31 @@ class SubregisterAnalyzer:
                 coherence_scores[community_id] = 0.0
                 continue
 
+            # Memory-efficient coherence computation for large communities
+            if len(members) > 1000:
+                # Sample for large communities to avoid memory issues
+                sample_size = min(500, len(members))
+                sample_members = np.random.choice(members, sample_size, replace=False)
+                community_embeddings = self.embeddings_pca_norm[sample_members]
+                print(
+                    f"  Community {community_id}: Sampling {sample_size}/{len(members)} documents for coherence"
+                )
+            else:
+                community_embeddings = self.embeddings_pca_norm[members]
+
             # Compute average pairwise cosine similarity within community
-            community_embeddings = self.embeddings_pca_norm[members]
             similarity_matrix = cosine_similarity(community_embeddings)
 
             # Get upper triangle (excluding diagonal)
             upper_triangle = np.triu(similarity_matrix, k=1)
             coherence = np.mean(upper_triangle[upper_triangle > 0])
             coherence_scores[community_id] = coherence
+
+            # Clear memory
+            del similarity_matrix, upper_triangle
+            import gc
+
+            gc.collect()
 
         analysis_text = f"\n=== COMMUNITY ANALYSIS (resolution={resolution}) ===\n"
         print(analysis_text)
@@ -316,7 +367,7 @@ class SubregisterAnalyzer:
         print(f"Community analysis saved to: {analysis_file}")
 
     def compute_community_coherence(self, resolution):
-        """Compute intra-community coherence scores"""
+        """Compute intra-community coherence scores (memory-efficient)"""
         communities = self.community_results[resolution]
         coherence_scores = {}
 
@@ -331,14 +382,31 @@ class SubregisterAnalyzer:
                 coherence_scores[community_id] = 0.0
                 continue
 
+            # Memory-efficient coherence computation for large communities
+            if len(members) > 1000:
+                # Sample for large communities to avoid memory issues
+                sample_size = min(500, len(members))
+                sample_members = np.random.choice(members, sample_size, replace=False)
+                community_embeddings = self.embeddings_pca_norm[sample_members]
+                print(
+                    f"  Community {community_id}: Sampling {sample_size}/{len(members)} documents"
+                )
+            else:
+                community_embeddings = self.embeddings_pca_norm[members]
+
             # Compute average pairwise cosine similarity within community
-            community_embeddings = self.embeddings_pca_norm[members]
             similarity_matrix = cosine_similarity(community_embeddings)
 
             # Get upper triangle (excluding diagonal)
             upper_triangle = np.triu(similarity_matrix, k=1)
             coherence = np.mean(upper_triangle[upper_triangle > 0])
             coherence_scores[community_id] = coherence
+
+            # Clear memory immediately
+            del similarity_matrix, upper_triangle, community_embeddings
+            import gc
+
+            gc.collect()
 
         # Print and save results
         print(f"\nCommunity Coherence Scores (resolution={resolution}):")
@@ -573,6 +641,9 @@ class SubregisterAnalyzer:
                 f.write(f"Register distribution: {dict(Counter(self.labels))}\n")
                 f.write(f"k-NN parameter: auto-computed\n")
                 f.write(f"Optimal resolution: {optimal_resolution}\n")
+                f.write(
+                    f"Optimal avg coherence score: {all_scores[optimal_resolution]['avg_coherence']:.3f}\n"
+                )
                 f.write(
                     f"Optimal silhouette score: {all_scores[optimal_resolution]['silhouette']:.3f}\n"
                 )
