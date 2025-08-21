@@ -1,0 +1,282 @@
+import pickle
+import warnings
+from collections import Counter
+
+import matplotlib.pyplot as plt
+import networkx as nx
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import umap
+from community import community_louvain
+from scipy.spatial.distance import cosine
+from sklearn.cluster import AgglomerativeClustering
+from sklearn.decomposition import PCA
+from sklearn.metrics import pairwise_distances
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.neighbors import NearestNeighbors
+
+warnings.filterwarnings("ignore")
+
+
+class SubregisterAnalyzer:
+    def __init__(self, pickle_path):
+        """Load and initialize the embedding data"""
+        print(f"Loading data from {pickle_path}...")
+        with open(pickle_path, "rb") as f:
+            self.data = pickle.load(f)
+
+        # Extract embeddings and metadata
+        self.embeddings = np.array([row["embed_last"] for row in self.data])
+        self.texts = [row["text"] for row in self.data]
+        self.labels = [
+            row["preds"][0] if row["preds"] else "unknown" for row in self.data
+        ]
+
+        print(f"Loaded {len(self.embeddings)} documents")
+        print(f"Embedding dimension: {self.embeddings.shape[1]}")
+        print(f"Register: {Counter(self.labels)}")
+
+        # Normalize embeddings for cosine similarity
+        self.embeddings_norm = self.embeddings / np.linalg.norm(
+            self.embeddings, axis=1, keepdims=True
+        )
+
+    def reduce_dimensions(self, n_components=200):
+        """Apply PCA for noise reduction and speedup"""
+        print(f"Applying PCA to reduce to {n_components} dimensions...")
+        self.pca = PCA(n_components=n_components, random_state=42)
+        self.embeddings_pca = self.pca.fit_transform(self.embeddings_norm)
+
+        # Normalize PCA embeddings
+        self.embeddings_pca_norm = self.embeddings_pca / np.linalg.norm(
+            self.embeddings_pca, axis=1, keepdims=True
+        )
+
+        print(
+            f"PCA explained variance ratio: {self.pca.explained_variance_ratio_[:10].sum():.3f} (first 10 components)"
+        )
+        return self.embeddings_pca_norm
+
+    def build_knn_graph(self, k=30, use_pca=True):
+        """Build k-nearest neighbor graph"""
+        print(f"Building {k}-NN graph...")
+
+        embeddings = self.embeddings_pca_norm if use_pca else self.embeddings_norm
+
+        # Find k-nearest neighbors
+        nbrs = NearestNeighbors(n_neighbors=k + 1, metric="cosine", n_jobs=-1)
+        nbrs.fit(embeddings)
+        distances, indices = nbrs.kneighbors(embeddings)
+
+        # Build graph (excluding self-connections)
+        self.graph = nx.Graph()
+        self.similarities = {}
+
+        for i in range(len(embeddings)):
+            for j in range(1, k + 1):  # Skip self (index 0)
+                neighbor = indices[i][j]
+                similarity = 1 - distances[i][j]  # Convert distance to similarity
+                self.graph.add_edge(i, neighbor, weight=similarity)
+                self.similarities[(i, neighbor)] = similarity
+
+        print(
+            f"Graph created with {self.graph.number_of_nodes()} nodes and {self.graph.number_of_edges()} edges"
+        )
+        return self.graph
+
+    def detect_communities_louvain(self, resolution=1.0):
+        """Detect communities using Louvain algorithm"""
+        print(f"Detecting communities with Louvain (resolution={resolution})...")
+
+        # Create weighted graph for community detection
+        partition = community_louvain.best_partition(
+            self.graph, resolution=resolution, random_state=42
+        )
+
+        # Convert to array format
+        communities = np.array([partition[i] for i in range(len(self.embeddings))])
+
+        n_communities = len(set(communities))
+        print(f"Found {n_communities} communities")
+
+        # Community sizes
+        community_sizes = Counter(communities)
+        print("Community sizes:", dict(sorted(community_sizes.items())))
+
+        return communities
+
+    def multi_resolution_analysis(self, resolutions=[0.5, 1.0, 1.5, 2.0]):
+        """Run community detection at multiple resolutions"""
+        print("Running multi-resolution community detection...")
+
+        self.community_results = {}
+
+        for res in resolutions:
+            communities = self.detect_communities_louvain(resolution=res)
+            self.community_results[res] = communities
+
+        return self.community_results
+
+    def visualize_communities_umap(self, resolution=1.0, sample_size=2000):
+        """Visualize communities using UMAP"""
+        print(f"Creating UMAP visualization (sampling {sample_size} documents)...")
+
+        # Sample for visualization if dataset is large
+        if len(self.embeddings) > sample_size:
+            idx = np.random.choice(len(self.embeddings), sample_size, replace=False)
+            embeddings_vis = self.embeddings_pca_norm[idx]
+            communities_vis = self.community_results[resolution][idx]
+            texts_vis = [self.texts[i] for i in idx]
+        else:
+            embeddings_vis = self.embeddings_pca_norm
+            communities_vis = self.community_results[resolution]
+            texts_vis = self.texts
+
+        # UMAP projection
+        umap_model = umap.UMAP(
+            n_neighbors=15, min_dist=0.1, metric="cosine", random_state=42
+        )
+        embedding_2d = umap_model.fit_transform(embeddings_vis)
+
+        # Plot
+        plt.figure(figsize=(12, 8))
+        scatter = plt.scatter(
+            embedding_2d[:, 0],
+            embedding_2d[:, 1],
+            c=communities_vis,
+            cmap="tab20",
+            alpha=0.6,
+            s=20,
+        )
+        plt.colorbar(scatter)
+        plt.title(f"UMAP Visualization of Communities (resolution={resolution})")
+        plt.xlabel("UMAP 1")
+        plt.ylabel("UMAP 2")
+        plt.show()
+
+        return embedding_2d, communities_vis
+
+    def analyze_communities(self, resolution=1.0, top_n=5):
+        """Analyze and sample documents from each community"""
+        communities = self.community_results[resolution]
+
+        print(f"\n=== COMMUNITY ANALYSIS (resolution={resolution}) ===")
+
+        for community_id in sorted(set(communities)):
+            members = np.where(communities == community_id)[0]
+
+            print(f"\n--- Community {community_id} ({len(members)} documents) ---")
+
+            # Sample representative documents
+            sample_indices = np.random.choice(
+                members, min(top_n, len(members)), replace=False
+            )
+
+            for i, idx in enumerate(sample_indices):
+                text_preview = (
+                    self.texts[idx][:200] + "..."
+                    if len(self.texts[idx]) > 200
+                    else self.texts[idx]
+                )
+                print(f"{i + 1}. [{idx}] {text_preview}")
+
+            if len(members) > top_n:
+                print(f"... and {len(members) - top_n} more documents")
+
+    def compute_community_coherence(self, resolution=1.0):
+        """Compute intra-community coherence scores"""
+        communities = self.community_results[resolution]
+        coherence_scores = {}
+
+        print(f"Computing community coherence scores...")
+
+        for community_id in set(communities):
+            members = np.where(communities == community_id)[0]
+
+            if len(members) < 2:
+                coherence_scores[community_id] = 0.0
+                continue
+
+            # Compute average pairwise cosine similarity within community
+            community_embeddings = self.embeddings_pca_norm[members]
+            similarity_matrix = cosine_similarity(community_embeddings)
+
+            # Get upper triangle (excluding diagonal)
+            upper_triangle = np.triu(similarity_matrix, k=1)
+            coherence = np.mean(upper_triangle[upper_triangle > 0])
+            coherence_scores[community_id] = coherence
+
+        # Print results
+        print("\nCommunity Coherence Scores:")
+        for community_id, score in sorted(coherence_scores.items()):
+            print(f"Community {community_id}: {score:.3f}")
+
+        return coherence_scores
+
+    def hierarchical_clustering_comparison(self, n_clusters_range=[5, 10, 15, 20]):
+        """Compare with hierarchical clustering for validation"""
+        print("Running hierarchical clustering comparison...")
+
+        self.hierarchical_results = {}
+
+        for n_clusters in n_clusters_range:
+            clustering = AgglomerativeClustering(
+                n_clusters=n_clusters, metric="cosine", linkage="average"
+            )
+            clusters = clustering.fit_predict(self.embeddings_pca_norm)
+            self.hierarchical_results[n_clusters] = clusters
+
+            print(f"Hierarchical clustering with {n_clusters} clusters:")
+            cluster_sizes = Counter(clusters)
+            print(f"  Cluster sizes: {dict(sorted(cluster_sizes.items()))}")
+
+    def run_full_analysis(self, k=30, resolutions=[0.5, 1.0, 1.5, 2.0]):
+        """Run the complete subregister discovery pipeline"""
+        print("=" * 60)
+        print("SUBREGISTER DISCOVERY ANALYSIS")
+        print("=" * 60)
+
+        # Step 1: Dimensionality reduction
+        self.reduce_dimensions()
+
+        # Step 2: Build k-NN graph
+        self.build_knn_graph(k=k)
+
+        # Step 3: Multi-resolution community detection
+        self.multi_resolution_analysis(resolutions=resolutions)
+
+        # Step 4: Analyze communities at default resolution
+        self.analyze_communities(resolution=1.0)
+
+        # Step 5: Compute coherence scores
+        self.compute_community_coherence(resolution=1.0)
+
+        # Step 6: Visualization
+        self.visualize_communities_umap(resolution=1.0)
+
+        # Step 7: Compare with hierarchical clustering
+        self.hierarchical_clustering_comparison()
+
+        print("\n" + "=" * 60)
+        print("ANALYSIS COMPLETE")
+        print("=" * 60)
+
+
+# Usage example
+if __name__ == "__main__":
+    # Initialize analyzer
+    analyzer = SubregisterAnalyzer(
+        "../data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/sm/en_embeds_ID.pkl"
+    )
+
+    # Run complete analysis
+    analyzer.run_full_analysis(k=30, resolutions=[0.5, 1.0, 1.5, 2.0])
+
+    # Additional analysis at different resolutions
+    print("\n" + "=" * 50)
+    print("DETAILED ANALYSIS AT DIFFERENT RESOLUTIONS")
+    print("=" * 50)
+
+    for resolution in [0.5, 1.0, 1.5]:
+        analyzer.analyze_communities(resolution=resolution, top_n=3)
