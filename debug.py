@@ -19,9 +19,9 @@ print(f"Tabs in line 1: {lines[1].count('\t')}")
 print(f"Tabs in line 2: {lines[2].count('\t')}")
 
 # Check for quotes
-print(f"\nQuotes in header: {lines[0].count('"')}")
-print(f"Quotes in line 1: {lines[1].count('"')}")
-print(f"Quotes in line 2: {lines[2].count('"')}")
+print(f"\nQuotes in header: {lines[0].count('\"')}")
+print(f"Quotes in line 1: {lines[1].count('\"')}")
+print(f"Quotes in line 2: {lines[2].count('\"')}")
 
 print("\n=== CSV PARSER TEST ===")
 # Test CSV parsing
