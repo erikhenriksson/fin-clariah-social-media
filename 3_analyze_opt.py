@@ -61,7 +61,7 @@ class SubregisterAnalyzer:
             self.embeddings, axis=1, keepdims=True
         )
 
-    def reduce_dimensions(self, n_components=50):
+    def reduce_dimensions(self, n_components=16):
         """Apply PCA for noise reduction and speedup"""
         print(f"Applying PCA to reduce to {n_components} dimensions...")
         self.pca = PCA(n_components=n_components, random_state=42)
