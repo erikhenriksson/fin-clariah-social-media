@@ -53,7 +53,7 @@ class SubregisterAnalyzer:
             self.embeddings, axis=1, keepdims=True
         )
 
-    def reduce_dimensions(self, n_components=200):
+    def reduce_dimensions(self, n_components=50):
         """Apply PCA for noise reduction and speedup"""
         print(f"Applying PCA to reduce to {n_components} dimensions...")
         self.pca = PCA(n_components=n_components, random_state=42)
@@ -64,9 +64,12 @@ class SubregisterAnalyzer:
             self.embeddings_pca, axis=1, keepdims=True
         )
 
+        total_variance = self.pca.explained_variance_ratio_.sum()
+        first_10_variance = self.pca.explained_variance_ratio_[:10].sum()
         print(
-            f"PCA explained variance ratio: {self.pca.explained_variance_ratio_[:10].sum():.3f} (first 10 components)"
+            f"PCA total variance explained: {total_variance:.3f} (all {n_components} components)"
         )
+        print(f"First 10 components explain: {first_10_variance:.3f} of total variance")
         return self.embeddings_pca_norm
 
     def build_knn_graph(self, k=30, use_pca=True):
