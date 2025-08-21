@@ -10,7 +10,6 @@ import leidenalg as la
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
-import pandas as pd
 import umap
 from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_samples, silhouette_score
@@ -148,180 +147,6 @@ class SubregisterAnalyzer:
 
         return communities
 
-    def analyze_communities(self, resolution=1.0, top_n=10):
-        """Analyze and sample documents from each community"""
-        communities = self.community_results[resolution]
-
-        # Compute coherence scores for all communities
-        print(
-            f"Computing coherence scores for community analysis (resolution={resolution})..."
-        )
-        coherence_scores = {}
-
-        for community_id in set(communities):
-            members = np.where(communities == community_id)[0]
-
-            if len(members) < 2:
-                coherence_scores[community_id] = 0.0
-                continue
-
-            # Compute average pairwise cosine similarity within community
-            community_embeddings = self.embeddings_pca_norm[members]
-            similarity_matrix = cosine_similarity(community_embeddings)
-
-            # Get upper triangle (excluding diagonal)
-            upper_triangle = np.triu(similarity_matrix, k=1)
-            coherence = np.mean(upper_triangle[upper_triangle > 0])
-            coherence_scores[community_id] = coherence
-
-        analysis_text = f"\n=== COMMUNITY ANALYSIS (resolution={resolution}) ===\n"
-        print(analysis_text)
-
-        # Save analysis to file
-        analysis_file = self.output_dir / f"community_analysis_res_{resolution}.txt"
-
-        with open(analysis_file, "w", encoding="utf-8") as f:
-            f.write(analysis_text)
-
-            for community_id in sorted(set(communities)):
-                members = np.where(communities == community_id)[0]
-                coherence_score = coherence_scores.get(community_id, 0.0)
-
-                section = f"\n--- Community {community_id} ({len(members)} documents, coherence: {coherence_score:.3f}) ---\n"
-                print(section)
-                f.write(section)
-
-                # Sample representative documents
-                sample_indices = np.random.choice(
-                    members, min(top_n, len(members)), replace=False
-                )
-
-                for i, idx in enumerate(sample_indices):
-                    # Get full predictions for this document
-                    doc_preds = self.preds[idx]
-                    # Escape newlines and save full text
-                    full_text = (
-                        self.texts[idx].replace("\n", "\\n").replace("\r", "\\r")
-                    )
-                    line = f"{i + 1}. [{idx}] {doc_preds} {full_text}\n"
-                    # For console output, show predictions and truncated text
-                    truncated_text = (
-                        self.texts[idx][:100] + "..."
-                        if len(self.texts[idx]) > 100
-                        else self.texts[idx]
-                    )
-                    print(f"{i + 1}. [{idx}] {doc_preds} {truncated_text}")
-                    f.write(line)
-
-                if len(members) > top_n:
-                    remaining = f"... and {len(members) - top_n} more documents\n"
-                    print(remaining.strip())
-                    f.write(remaining)
-
-        print(f"Community analysis saved to: {analysis_file}")
-
-    def compute_community_coherence(self, resolution=1.0):
-        """Compute intra-community coherence scores"""
-        communities = self.community_results[resolution]
-        coherence_scores = {}
-
-        print(f"Computing community coherence scores (resolution={resolution})...")
-
-        coherence_text = f"Community Coherence Scores (resolution={resolution}):\n"
-
-        for community_id in set(communities):
-            members = np.where(communities == community_id)[0]
-
-            if len(members) < 2:
-                coherence_scores[community_id] = 0.0
-                continue
-
-            # Compute average pairwise cosine similarity within community
-            community_embeddings = self.embeddings_pca_norm[members]
-            similarity_matrix = cosine_similarity(community_embeddings)
-
-            # Get upper triangle (excluding diagonal)
-            upper_triangle = np.triu(similarity_matrix, k=1)
-            coherence = np.mean(upper_triangle[upper_triangle > 0])
-            coherence_scores[community_id] = coherence
-
-        # Print and save results
-        print(f"\nCommunity Coherence Scores (resolution={resolution}):")
-        for community_id, score in sorted(coherence_scores.items()):
-            line = f"Community {community_id}: {score:.3f}"
-            print(line)
-            coherence_text += line + "\n"
-
-        # Save coherence scores
-        coherence_file = self.output_dir / f"coherence_scores_res_{resolution}.txt"
-        with open(coherence_file, "w", encoding="utf-8") as f:
-            f.write(coherence_text)
-        print(f"Coherence scores saved to: {coherence_file}")
-
-        return coherence_scores
-
-    def compute_silhouette_analysis(self, resolution=1.0):
-        """Compute silhouette scores for community validation"""
-        communities = self.community_results[resolution]
-
-        print(f"Computing silhouette scores (resolution={resolution})...")
-
-        try:
-            # Overall silhouette score
-            overall_silhouette = silhouette_score(
-                self.embeddings_pca_norm, communities, metric="cosine"
-            )
-
-            # Individual silhouette scores for each document
-            sample_silhouette_values = silhouette_samples(
-                self.embeddings_pca_norm, communities, metric="cosine"
-            )
-
-            # Compute average silhouette score per community
-            community_silhouettes = {}
-            for community_id in sorted(set(communities)):
-                mask = communities == community_id
-                if np.sum(mask) > 1:  # Need at least 2 documents
-                    community_avg = np.mean(sample_silhouette_values[mask])
-                    community_silhouettes[community_id] = community_avg
-                else:
-                    community_silhouettes[community_id] = 0.0
-
-            # Print results
-            print(
-                f"\nOverall Silhouette Score (resolution={resolution}): {overall_silhouette:.3f}"
-            )
-            print(f"\nPer-Community Silhouette Scores (resolution={resolution}):")
-
-            silhouette_text = f"SILHOUETTE ANALYSIS (resolution={resolution})\n"
-            silhouette_text += f"==================\n\n"
-            silhouette_text += f"Overall Silhouette Score: {overall_silhouette:.3f}\n"
-            silhouette_text += f"Interpretation:\n"
-            silhouette_text += f"  > 0.7: Strong cluster structure\n"
-            silhouette_text += f"  > 0.5: Reasonable cluster structure\n"
-            silhouette_text += f"  > 0.3: Weak but acceptable structure\n"
-            silhouette_text += f"  < 0.3: Poor cluster structure\n"
-            silhouette_text += f"  < 0.0: Documents may be in wrong clusters\n\n"
-            silhouette_text += f"Per-Community Silhouette Scores:\n"
-
-            for community_id, score in sorted(community_silhouettes.items()):
-                line = f"Community {community_id}: {score:.3f}"
-                print(line)
-                silhouette_text += line + "\n"
-
-            # Save silhouette scores
-            silhouette_file = (
-                self.output_dir / f"silhouette_analysis_res_{resolution}.txt"
-            )
-            with open(silhouette_file, "w", encoding="utf-8") as f:
-                f.write(silhouette_text)
-            print(f"\nSilhouette analysis saved to: {silhouette_file}")
-
-            return overall_silhouette, community_silhouettes
-
-        except Exception as e:
-            print(f"Error computing silhouette scores: {e}")
-
     def find_optimal_resolution(
         self, resolutions=[0.3, 0.5, 0.7, 1.0, 1.3, 1.5, 1.7, 2.0]
     ):
@@ -333,7 +158,7 @@ class SubregisterAnalyzer:
         resolution_scores = {}
 
         for resolution in resolutions:
-            print(f"\nTesting resolution {resolution}...")
+            print(f"\\nTesting resolution {resolution}...")
             try:
                 # Detect communities at this resolution
                 communities = self.detect_communities_leiden(resolution=resolution)
@@ -380,7 +205,7 @@ class SubregisterAnalyzer:
         optimal_score = resolution_scores[optimal_resolution]["silhouette"]
         optimal_communities = resolution_scores[optimal_resolution]["communities"]
 
-        print(f"\n" + "=" * 50)
+        print(f"\\n" + "=" * 50)
         print(f"OPTIMAL RESOLUTION FOUND: {optimal_resolution}")
         print(f"Silhouette Score: {optimal_score:.3f}")
         print(
@@ -391,27 +216,202 @@ class SubregisterAnalyzer:
         # Save optimization results
         optimization_file = self.output_dir / "resolution_optimization.txt"
         with open(optimization_file, "w", encoding="utf-8") as f:
-            f.write("RESOLUTION OPTIMIZATION RESULTS\n")
-            f.write("=" * 40 + "\n\n")
-            f.write(f"Optimal Resolution: {optimal_resolution}\n")
-            f.write(f"Optimal Silhouette Score: {optimal_score:.3f}\n")
+            f.write("RESOLUTION OPTIMIZATION RESULTS\\n")
+            f.write("=" * 40 + "\\n\\n")
+            f.write(f"Optimal Resolution: {optimal_resolution}\\n")
+            f.write(f"Optimal Silhouette Score: {optimal_score:.3f}\\n")
             f.write(
-                f"Number of Communities: {resolution_scores[optimal_resolution]['n_communities']}\n\n"
+                f"Number of Communities: {resolution_scores[optimal_resolution]['n_communities']}\\n\\n"
             )
-            f.write("All Tested Resolutions:\n")
+            f.write("All Tested Resolutions:\\n")
             for res in sorted(resolution_scores.keys()):
                 score = resolution_scores[res]["silhouette"]
                 n_comm = resolution_scores[res]["n_communities"]
                 marker = " <- OPTIMAL" if res == optimal_resolution else ""
                 f.write(
-                    f"  {res}: {score:.3f} silhouette, {n_comm} communities{marker}\n"
+                    f"  {res}: {score:.3f} silhouette, {n_comm} communities{marker}\\n"
                 )
 
         print(f"Resolution optimization results saved to: {optimization_file}")
 
         return optimal_resolution, optimal_communities, resolution_scores
 
-    def visualize_communities_umap(self, resolution=1.0):
+    def analyze_communities(self, resolution, top_n=10):
+        """Analyze and sample documents from each community"""
+        communities = self.community_results[resolution]
+
+        # Compute coherence scores for all communities
+        print(
+            f"Computing coherence scores for community analysis (resolution={resolution})..."
+        )
+        coherence_scores = {}
+
+        for community_id in set(communities):
+            members = np.where(communities == community_id)[0]
+
+            if len(members) < 2:
+                coherence_scores[community_id] = 0.0
+                continue
+
+            # Compute average pairwise cosine similarity within community
+            community_embeddings = self.embeddings_pca_norm[members]
+            similarity_matrix = cosine_similarity(community_embeddings)
+
+            # Get upper triangle (excluding diagonal)
+            upper_triangle = np.triu(similarity_matrix, k=1)
+            coherence = np.mean(upper_triangle[upper_triangle > 0])
+            coherence_scores[community_id] = coherence
+
+        analysis_text = f"\\n=== COMMUNITY ANALYSIS (resolution={resolution}) ===\\n"
+        print(analysis_text)
+
+        # Save analysis to file
+        analysis_file = self.output_dir / f"community_analysis_res_{resolution}.txt"
+
+        with open(analysis_file, "w", encoding="utf-8") as f:
+            f.write(analysis_text)
+
+            for community_id in sorted(set(communities)):
+                members = np.where(communities == community_id)[0]
+                coherence_score = coherence_scores.get(community_id, 0.0)
+
+                section = f"\\n--- Community {community_id} ({len(members)} documents, coherence: {coherence_score:.3f}) ---\\n"
+                print(section)
+                f.write(section)
+
+                # Sample representative documents
+                sample_indices = np.random.choice(
+                    members, min(top_n, len(members)), replace=False
+                )
+
+                for i, idx in enumerate(sample_indices):
+                    # Get full predictions for this document
+                    doc_preds = self.preds[idx]
+                    # Escape newlines and save full text
+                    full_text = (
+                        self.texts[idx].replace("\\n", "\\\\n").replace("\\r", "\\\\r")
+                    )
+                    line = f"{i + 1}. [{idx}] {doc_preds} {full_text}\\n"
+                    # For console output, show predictions and truncated text
+                    truncated_text = (
+                        self.texts[idx][:100] + "..."
+                        if len(self.texts[idx]) > 100
+                        else self.texts[idx]
+                    )
+                    print(f"{i + 1}. [{idx}] {doc_preds} {truncated_text}")
+                    f.write(line)
+
+                if len(members) > top_n:
+                    remaining = f"... and {len(members) - top_n} more documents\\n"
+                    print(remaining.strip())
+                    f.write(remaining)
+
+        print(f"Community analysis saved to: {analysis_file}")
+
+    def compute_community_coherence(self, resolution):
+        """Compute intra-community coherence scores"""
+        communities = self.community_results[resolution]
+        coherence_scores = {}
+
+        print(f"Computing community coherence scores (resolution={resolution})...")
+
+        coherence_text = f"Community Coherence Scores (resolution={resolution}):\\n"
+
+        for community_id in set(communities):
+            members = np.where(communities == community_id)[0]
+
+            if len(members) < 2:
+                coherence_scores[community_id] = 0.0
+                continue
+
+            # Compute average pairwise cosine similarity within community
+            community_embeddings = self.embeddings_pca_norm[members]
+            similarity_matrix = cosine_similarity(community_embeddings)
+
+            # Get upper triangle (excluding diagonal)
+            upper_triangle = np.triu(similarity_matrix, k=1)
+            coherence = np.mean(upper_triangle[upper_triangle > 0])
+            coherence_scores[community_id] = coherence
+
+        # Print and save results
+        print(f"\\nCommunity Coherence Scores (resolution={resolution}):")
+        for community_id, score in sorted(coherence_scores.items()):
+            line = f"Community {community_id}: {score:.3f}"
+            print(line)
+            coherence_text += line + "\\n"
+
+        # Save coherence scores
+        coherence_file = self.output_dir / f"coherence_scores_res_{resolution}.txt"
+        with open(coherence_file, "w", encoding="utf-8") as f:
+            f.write(coherence_text)
+        print(f"Coherence scores saved to: {coherence_file}")
+
+        return coherence_scores
+
+    def compute_silhouette_analysis(self, resolution):
+        """Compute silhouette scores for community validation"""
+        communities = self.community_results[resolution]
+
+        print(f"Computing silhouette scores (resolution={resolution})...")
+
+        try:
+            # Overall silhouette score
+            overall_silhouette = silhouette_score(
+                self.embeddings_pca_norm, communities, metric="cosine"
+            )
+
+            # Individual silhouette scores for each document
+            sample_silhouette_values = silhouette_samples(
+                self.embeddings_pca_norm, communities, metric="cosine"
+            )
+
+            # Compute average silhouette score per community
+            community_silhouettes = {}
+            for community_id in sorted(set(communities)):
+                mask = communities == community_id
+                if np.sum(mask) > 1:  # Need at least 2 documents
+                    community_avg = np.mean(sample_silhouette_values[mask])
+                    community_silhouettes[community_id] = community_avg
+                else:
+                    community_silhouettes[community_id] = 0.0
+
+            # Print results
+            print(
+                f"\\nOverall Silhouette Score (resolution={resolution}): {overall_silhouette:.3f}"
+            )
+            print(f"\\nPer-Community Silhouette Scores (resolution={resolution}):")
+
+            silhouette_text = f"SILHOUETTE ANALYSIS (resolution={resolution})\\n"
+            silhouette_text += f"==================\\n\\n"
+            silhouette_text += f"Overall Silhouette Score: {overall_silhouette:.3f}\\n"
+            silhouette_text += f"Interpretation:\\n"
+            silhouette_text += f"  > 0.7: Strong cluster structure\\n"
+            silhouette_text += f"  > 0.5: Reasonable cluster structure\\n"
+            silhouette_text += f"  > 0.3: Weak but acceptable structure\\n"
+            silhouette_text += f"  < 0.3: Poor cluster structure\\n"
+            silhouette_text += f"  < 0.0: Documents may be in wrong clusters\\n\\n"
+            silhouette_text += f"Per-Community Silhouette Scores:\\n"
+
+            for community_id, score in sorted(community_silhouettes.items()):
+                line = f"Community {community_id}: {score:.3f}"
+                print(line)
+                silhouette_text += line + "\\n"
+
+            # Save silhouette scores
+            silhouette_file = (
+                self.output_dir / f"silhouette_analysis_res_{resolution}.txt"
+            )
+            with open(silhouette_file, "w", encoding="utf-8") as f:
+                f.write(silhouette_text)
+            print(f"\\nSilhouette analysis saved to: {silhouette_file}")
+
+            return overall_silhouette, community_silhouettes
+
+        except Exception as e:
+            print(f"Error computing silhouette scores: {e}")
+            return None, {}
+
+    def visualize_communities_umap(self, resolution):
         """Visualize communities using UMAP"""
         try:
             print(
@@ -470,7 +470,7 @@ class SubregisterAnalyzer:
                     )
 
             plt.title(
-                f"UMAP Visualization of Communities (resolution={resolution})\nNumbers show Community IDs"
+                f"UMAP Visualization of Communities (resolution={resolution})\\nNumbers show Community IDs"
             )
             plt.xlabel("UMAP 1")
             plt.ylabel("UMAP 2")
@@ -558,23 +558,23 @@ class SubregisterAnalyzer:
             # Save summary info
             summary_file = self.output_dir / "analysis_summary.txt"
             with open(summary_file, "w", encoding="utf-8") as f:
-                f.write("SUBREGISTER DISCOVERY ANALYSIS SUMMARY\n")
-                f.write("=" * 60 + "\n\n")
-                f.write(f"Input file: {self.pickle_path}\n")
-                f.write(f"Number of documents: {len(self.embeddings)}\n")
-                f.write(f"Embedding dimension: {self.embeddings.shape[1]}\n")
-                f.write(f"Register distribution: {dict(Counter(self.labels))}\n")
-                f.write(f"k-NN parameter: auto-computed\n")
-                f.write(f"Optimal resolution: {optimal_resolution}\n")
+                f.write("SUBREGISTER DISCOVERY ANALYSIS SUMMARY\\n")
+                f.write("=" * 60 + "\\n\\n")
+                f.write(f"Input file: {self.pickle_path}\\n")
+                f.write(f"Number of documents: {len(self.embeddings)}\\n")
+                f.write(f"Embedding dimension: {self.embeddings.shape[1]}\\n")
+                f.write(f"Register distribution: {dict(Counter(self.labels))}\\n")
+                f.write(f"k-NN parameter: auto-computed\\n")
+                f.write(f"Optimal resolution: {optimal_resolution}\\n")
                 f.write(
-                    f"Optimal silhouette score: {all_scores[optimal_resolution]['silhouette']:.3f}\n"
+                    f"Optimal silhouette score: {all_scores[optimal_resolution]['silhouette']:.3f}\\n"
                 )
                 f.write(
-                    f"Number of communities: {all_scores[optimal_resolution]['n_communities']}\n\n"
+                    f"Number of communities: {all_scores[optimal_resolution]['n_communities']}\\n\\n"
                 )
 
             # Step 4: Full analysis at optimal resolution
-            print(f"\n{'=' * 50}")
+            print(f"\\n{'=' * 50}")
             print(f"ANALYZING OPTIMAL RESOLUTION: {optimal_resolution}")
             print(f"{'=' * 50}")
 
@@ -593,7 +593,7 @@ class SubregisterAnalyzer:
             except Exception as e:
                 print(f"Skipping UMAP visualization due to error: {e}")
 
-            print("\n" + "=" * 60)
+            print("\\n" + "=" * 60)
             print("ANALYSIS COMPLETE")
             print(f"Optimal resolution: {optimal_resolution}")
             print(f"All results saved to: {self.output_dir}")
@@ -626,29 +626,39 @@ if __name__ == "__main__":
     for i, file in enumerate(pkl_files, 1):
         print(f"{i}. {os.path.basename(file)}")
 
-    print(f"\nAll results will be saved to: {results_dir}/")
+    print(f"\\nAll results will be saved to: {results_dir}/")
 
-    print("\n" + "=" * 80)
+    print("\\n" + "=" * 80)
     print("PROCESSING ALL PKL FILES")
     print("=" * 80)
 
     successful_analyses = 0
     failed_analyses = []
+    skipped_files = []
 
     for i, pkl_file in enumerate(pkl_files, 1):
         try:
-            print(f"\n{'=' * 60}")
+            print(f"\\n{'=' * 60}")
             print(f"PROCESSING FILE {i}/{len(pkl_files)}: {os.path.basename(pkl_file)}")
             print(f"{'=' * 60}")
 
             # Initialize analyzer for this file
             analyzer = SubregisterAnalyzer(pkl_file, results_base_dir=results_dir)
 
-            # Run analysis with three resolutions
-            analyzer.run_full_analysis(resolutions=[0.5, 1.0, 1.5])
+            # Run analysis with automatic resolution optimization
+            analyzer.run_full_analysis()
 
             successful_analyses += 1
             print(f"✓ Successfully completed analysis for {os.path.basename(pkl_file)}")
+
+        except ValueError as e:
+            if "too small" in str(e):
+                print(f"⚠ Skipping {os.path.basename(pkl_file)}: {e}")
+                skipped_files.append((pkl_file, str(e)))
+            else:
+                print(f"✗ Error processing {os.path.basename(pkl_file)}: {e}")
+                failed_analyses.append((pkl_file, str(e)))
+            continue
 
         except Exception as e:
             print(f"✗ Error processing {os.path.basename(pkl_file)}: {e}")
@@ -668,19 +678,25 @@ if __name__ == "__main__":
             gc.collect()
 
     # Final summary
-    print("\n" + "=" * 80)
+    print("\\n" + "=" * 80)
     print("BATCH PROCESSING COMPLETE")
     print("=" * 80)
     print(f"Successfully processed: {successful_analyses}/{len(pkl_files)} files")
 
+    if skipped_files:
+        print(f"\\nSkipped files ({len(skipped_files)}):")
+        for file, reason in skipped_files:
+            print(f"  ⚠ {os.path.basename(file)}: {reason}")
+
     if failed_analyses:
-        print(f"\nFailed analyses ({len(failed_analyses)}):")
+        print(f"\\nFailed analyses ({len(failed_analyses)}):")
         for file, error in failed_analyses:
             print(f"  ✗ {os.path.basename(file)}: {error}")
-    else:
-        print("All files processed successfully! ✓")
 
-    print(f"\nResults organized in: {results_dir}/")
+    if successful_analyses + len(skipped_files) == len(pkl_files):
+        print("All eligible files processed successfully! ✓")
+
+    print(f"\\nResults organized in: {results_dir}/")
 
     # List created subdirectories
     if os.path.exists(results_dir):
@@ -694,4 +710,4 @@ if __name__ == "__main__":
             for subdir in sorted(subdirs):
                 print(f"  - {results_dir}/{subdir}/")
 
-    print("\nAnalysis completed with cleanup.")
+    print("\\nAnalysis completed with cleanup.")
