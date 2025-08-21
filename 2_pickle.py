@@ -22,9 +22,8 @@ for filename in files:
     with open(input_path, "r", encoding="utf-8", newline="") as infile:
         reader = csv.reader(infile, delimiter="\t")
 
-        # Get header and find column indices
+        # Get header
         header = next(reader)
-        column_indices = [header.index(col) for col in columns_to_keep]
 
         # Process each row
         for row in reader:
