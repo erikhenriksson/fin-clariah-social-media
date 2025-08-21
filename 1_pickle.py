@@ -15,11 +15,15 @@ files = ["en_embeds.tsv", "fi_embeds.tsv", "sv_embeds.tsv"]
 target_values = {"ID", "NB", "OB"}
 
 for filename in files:
+    print(f"\n=== Processing {filename} ===")
     input_path = f"../data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/{filename}"
     lang = filename.split("_")[0]  # Extract language code
 
+    print(f"First pass: scanning for unique preds combinations...")
     # First pass: collect all unique preds combinations
     preds_combinations = set()
+    total_rows = 0
+    matching_rows = 0
 
     with open(input_path, "r", encoding="utf-8", newline="") as infile:
         reader = csv.reader(infile, delimiter="\t")
@@ -27,17 +31,32 @@ for filename in files:
         preds_index = header.index("preds")
 
         for row in reader:
+            total_rows += 1
+            if total_rows % 100000 == 0:
+                print(
+                    f"  Scanned {total_rows:,} rows, found {matching_rows:,} matching..."
+                )
+
             preds_str = row[preds_index]
             preds_list = ast.literal_eval(preds_str)
 
             if any(pred in target_values for pred in preds_list):
+                matching_rows += 1
                 preds_suffix = "-".join(sorted(preds_list))
                 preds_combinations.add(preds_suffix)
 
-    print(f"Found {len(preds_combinations)} unique preds combinations in {filename}")
+    print(
+        f"First pass complete: {total_rows:,} total rows, {matching_rows:,} matching rows"
+    )
+    print(
+        f"Found {len(preds_combinations)} unique preds combinations: {sorted(preds_combinations)}"
+    )
 
     # Second pass: process each preds combination separately
-    for preds_suffix in preds_combinations:
+    for i, preds_suffix in enumerate(sorted(preds_combinations), 1):
+        print(
+            f"\nSecond pass {i}/{len(preds_combinations)}: Processing preds='{preds_suffix}'..."
+        )
         output_path = f"../data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/sm/{lang}_embeds_{preds_suffix}.pkl"
         rows_for_this_preds = []
         count = 0
@@ -52,7 +71,12 @@ for filename in files:
             preds_index = header.index("preds")
 
             # Process each row
-            for row in reader:
+            for row_num, row in enumerate(reader, 1):
+                if row_num % 100000 == 0:
+                    print(
+                        f"    Processed {row_num:,} rows, found {count} matches for '{preds_suffix}'..."
+                    )
+
                 preds_str = row[preds_index]
                 preds_list = ast.literal_eval(preds_str)
 
@@ -78,6 +102,7 @@ for filename in files:
 
                     # Save in batches to avoid memory issues
                     if len(rows_for_this_preds) >= 10000:
+                        print(f"    Saving batch of {len(rows_for_this_preds)} rows...")
                         if count == len(rows_for_this_preds):  # First batch
                             with open(output_path, "wb") as outfile:
                                 pickle.dump(rows_for_this_preds, outfile)
@@ -91,6 +116,7 @@ for filename in files:
 
         # Save any remaining rows
         if rows_for_this_preds:
+            print(f"    Saving final batch of {len(rows_for_this_preds)} rows...")
             if count == len(rows_for_this_preds):  # Only batch
                 with open(output_path, "wb") as outfile:
                     pickle.dump(rows_for_this_preds, outfile)
@@ -101,6 +127,8 @@ for filename in files:
                 with open(output_path, "wb") as outfile:
                     pickle.dump(existing, outfile)
 
-        print(f"Saved {count} rows to {lang}_embeds_{preds_suffix}.pkl")
+        print(
+            f"✓ Completed '{preds_suffix}': saved {count:,} rows to {lang}_embeds_{preds_suffix}.pkl"
+        )
 
-print("Processing complete!")
+print("\n🎉 Processing complete!")
