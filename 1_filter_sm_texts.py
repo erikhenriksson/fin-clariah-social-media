@@ -18,13 +18,10 @@ for filename in files:
         open(output_path, "w", encoding="utf-8", newline="") as outfile,
     ):
         reader = csv.reader(infile, delimiter="\t")
-        writer = csv.writer(
-            outfile, delimiter="\t", quoting=csv.QUOTE_NONE, escapechar=None
-        )
 
         # Copy header and find preds column index
         header = next(reader)
-        writer.writerow(header)
+        outfile.write("\t".join(header) + "\n")
         preds_index = header.index("preds")
 
         # Process each row
@@ -36,6 +33,6 @@ for filename in files:
 
             # Check if any target value is in the preds list
             if any(pred in target_values for pred in preds_list):
-                writer.writerow(row)
+                outfile.write("\t".join(row) + "\n")
 
 print("Filtering complete!")
