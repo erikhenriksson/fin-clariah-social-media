@@ -117,71 +117,143 @@ class SubregisterAnalyzer:
 
         return communities
 
-    def multi_resolution_analysis(self, resolutions=[0.5, 1.0, 1.5, 2.0]):
-        """Run community detection at multiple resolutions"""
-        print("Running multi-resolution community detection...")
+    def multi_resolution_analysis(self):
+        """Run community detection at resolution=1.0 only"""
+        print("Running community detection at resolution=1.0...")
 
-        self.community_results = {}
-
-        for res in resolutions:
-            communities = self.detect_communities_louvain(resolution=res)
-            self.community_results[res] = communities
+        communities = self.detect_communities_louvain(resolution=1.0)
+        self.community_results = {1.0: communities}
 
         return self.community_results
 
-    def visualize_communities_umap(self, resolution=1.0, sample_size=2000):
-        """Visualize communities using UMAP"""
-        print(f"Creating UMAP visualization (sampling {sample_size} documents)...")
+    def visualize_communities_umap(self):
+        """Visualize communities using UMAP (all data, resolution=1.0)"""
+        try:
+            print(
+                f"Creating UMAP visualization for all {len(self.embeddings)} documents..."
+            )
 
-        # Sample for visualization if dataset is large
-        if len(self.embeddings) > sample_size:
-            idx = np.random.choice(len(self.embeddings), sample_size, replace=False)
-            embeddings_vis = self.embeddings_pca_norm[idx]
-            communities_vis = self.community_results[resolution][idx]
-            texts_vis = [self.texts[i] for i in idx]
-        else:
+            # Use all data
             embeddings_vis = self.embeddings_pca_norm
-            communities_vis = self.community_results[resolution]
-            texts_vis = self.texts
+            communities_vis = self.community_results[1.0]
 
-        # UMAP projection
-        umap_model = umap.UMAP(
-            n_neighbors=15, min_dist=0.1, metric="cosine", random_state=42
-        )
-        embedding_2d = umap_model.fit_transform(embeddings_vis)
+            # UMAP projection with memory-efficient settings
+            umap_model = umap.UMAP(
+                n_neighbors=min(30, len(embeddings_vis) // 10),
+                min_dist=0.1,
+                metric="cosine",
+                random_state=42,
+                low_memory=True,
+            )
+            embedding_2d = umap_model.fit_transform(embeddings_vis)
 
-        # Plot and save
-        plt.figure(figsize=(12, 8))
-        scatter = plt.scatter(
-            embedding_2d[:, 0],
-            embedding_2d[:, 1],
-            c=communities_vis,
-            cmap="tab20",
-            alpha=0.6,
-            s=20,
-        )
-        plt.colorbar(scatter)
-        plt.title(f"UMAP Visualization of Communities (resolution={resolution})")
-        plt.xlabel("UMAP 1")
-        plt.ylabel("UMAP 2")
+            # Plot and save
+            plt.figure(figsize=(14, 10))
+            scatter = plt.scatter(
+                embedding_2d[:, 0],
+                embedding_2d[:, 1],
+                c=communities_vis,
+                cmap="tab20",
+                alpha=0.7,
+                s=8,
+            )
+            plt.colorbar(scatter, label="Community ID")
 
-        # Save plot
-        plot_path = self.output_dir / f"umap_communities_res_{resolution}.png"
-        plt.savefig(plot_path, dpi=300, bbox_inches="tight")
-        plt.close()
-        print(f"UMAP plot saved to: {plot_path}")
+            # Add community labels at centroids
+            unique_communities = sorted(set(communities_vis))
+            for community_id in unique_communities:
+                # Find centroid of each community
+                mask = communities_vis == community_id
+                if np.sum(mask) > 0:
+                    centroid_x = np.mean(embedding_2d[mask, 0])
+                    centroid_y = np.mean(embedding_2d[mask, 1])
 
-        return embedding_2d, communities_vis
+                    # Add text label with background
+                    plt.annotate(
+                        f"{community_id}",
+                        (centroid_x, centroid_y),
+                        fontsize=12,
+                        fontweight="bold",
+                        ha="center",
+                        va="center",
+                        bbox=dict(
+                            boxstyle="round,pad=0.3",
+                            facecolor="white",
+                            edgecolor="black",
+                            alpha=0.8,
+                        ),
+                    )
 
-    def analyze_communities(self, resolution=1.0, top_n=5):
+            plt.title(
+                "UMAP Visualization of Communities (resolution=1.0)\nNumbers show Community IDs"
+            )
+            plt.xlabel("UMAP 1")
+            plt.ylabel("UMAP 2")
+
+            # Save plot
+            plot_path = self.output_dir / "umap_communities.png"
+            plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+            plt.close()
+
+            # Create a legend mapping colors to community IDs
+            self._create_community_legend(unique_communities)
+
+            # Force garbage collection
+            import gc
+
+            gc.collect()
+
+            print(f"UMAP plot saved to: {plot_path}")
+            return embedding_2d, communities_vis
+
+        except Exception as e:
+            print(f"Error creating UMAP visualization: {e}")
+            plt.close("all")
+            return None, None
+
+    def _create_community_legend(self, unique_communities):
+        """Create a separate legend figure showing community colors"""
+        try:
+            fig, ax = plt.subplots(figsize=(8, max(6, len(unique_communities) * 0.4)))
+
+            # Get colors from tab20 colormap
+            cmap = plt.cm.tab20
+            colors = [cmap(i / 20) for i in range(len(unique_communities))]
+
+            # Create legend entries
+            for i, community_id in enumerate(unique_communities):
+                ax.scatter(
+                    [], [], c=[colors[i]], s=100, label=f"Community {community_id}"
+                )
+
+            ax.legend(
+                loc="center", fontsize=10, ncol=max(1, len(unique_communities) // 15)
+            )
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+            ax.axis("off")
+            ax.set_title("Community Color Legend", fontsize=14, fontweight="bold")
+
+            # Save legend
+            legend_path = self.output_dir / "community_legend.png"
+            plt.savefig(legend_path, dpi=150, bbox_inches="tight")
+            plt.close()
+
+            print(f"Community legend saved to: {legend_path}")
+
+        except Exception as e:
+            print(f"Error creating community legend: {e}")
+            plt.close("all")
+
+    def analyze_communities(self, top_n=5):
         """Analyze and sample documents from each community"""
-        communities = self.community_results[resolution]
+        communities = self.community_results[1.0]
 
-        analysis_text = f"\n=== COMMUNITY ANALYSIS (resolution={resolution}) ===\n"
+        analysis_text = f"\n=== COMMUNITY ANALYSIS (resolution=1.0) ===\n"
         print(analysis_text)
 
         # Save analysis to file
-        analysis_file = self.output_dir / f"community_analysis_res_{resolution}.txt"
+        analysis_file = self.output_dir / "community_analysis.txt"
 
         with open(analysis_file, "w", encoding="utf-8") as f:
             f.write(analysis_text)
@@ -217,9 +289,9 @@ class SubregisterAnalyzer:
 
         print(f"Community analysis saved to: {analysis_file}")
 
-    def compute_community_coherence(self, resolution=1.0):
+    def compute_community_coherence(self):
         """Compute intra-community coherence scores"""
-        communities = self.community_results[resolution]
+        communities = self.community_results[1.0]
         coherence_scores = {}
 
         print(f"Computing community coherence scores...")
@@ -250,7 +322,7 @@ class SubregisterAnalyzer:
             coherence_text += line + "\n"
 
         # Save coherence scores
-        coherence_file = self.output_dir / f"coherence_scores_res_{resolution}.txt"
+        coherence_file = self.output_dir / "coherence_scores.txt"
         with open(coherence_file, "w", encoding="utf-8") as f:
             f.write(coherence_text)
         print(f"Coherence scores saved to: {coherence_file}")
@@ -288,66 +360,87 @@ class SubregisterAnalyzer:
             f.write(comparison_text)
         print(f"Hierarchical clustering comparison saved to: {comparison_file}")
 
-    def run_full_analysis(self, k=30, resolutions=[0.5, 1.0, 1.5, 2.0]):
+    def run_full_analysis(self, k=30):
         """Run the complete subregister discovery pipeline"""
-        print("=" * 60)
-        print("SUBREGISTER DISCOVERY ANALYSIS")
-        print("=" * 60)
+        try:
+            print("=" * 60)
+            print("SUBREGISTER DISCOVERY ANALYSIS")
+            print("=" * 60)
 
-        # Save summary info
-        summary_file = self.output_dir / "analysis_summary.txt"
-        with open(summary_file, "w", encoding="utf-8") as f:
-            f.write("SUBREGISTER DISCOVERY ANALYSIS SUMMARY\n")
-            f.write("=" * 60 + "\n\n")
-            f.write(f"Input file: {self.pickle_path}\n")
-            f.write(f"Number of documents: {len(self.embeddings)}\n")
-            f.write(f"Embedding dimension: {self.embeddings.shape[1]}\n")
-            f.write(f"Register distribution: {dict(Counter(self.labels))}\n")
-            f.write(f"k-NN parameter: {k}\n")
-            f.write(f"Resolutions tested: {resolutions}\n\n")
+            # Save summary info
+            summary_file = self.output_dir / "analysis_summary.txt"
+            with open(summary_file, "w", encoding="utf-8") as f:
+                f.write("SUBREGISTER DISCOVERY ANALYSIS SUMMARY\n")
+                f.write("=" * 60 + "\n\n")
+                f.write(f"Input file: {self.pickle_path}\n")
+                f.write(f"Number of documents: {len(self.embeddings)}\n")
+                f.write(f"Embedding dimension: {self.embeddings.shape[1]}\n")
+                f.write(f"Register distribution: {dict(Counter(self.labels))}\n")
+                f.write(f"k-NN parameter: {k}\n")
+                f.write(f"Resolution: 1.0\n\n")
 
-        # Step 1: Dimensionality reduction
-        self.reduce_dimensions()
+            # Step 1: Dimensionality reduction
+            self.reduce_dimensions()
 
-        # Step 2: Build k-NN graph
-        self.build_knn_graph(k=k)
+            # Step 2: Build k-NN graph
+            self.build_knn_graph(k=k)
 
-        # Step 3: Multi-resolution community detection
-        self.multi_resolution_analysis(resolutions=resolutions)
+            # Step 3: Community detection at resolution=1.0
+            self.multi_resolution_analysis()
 
-        # Step 4: Analyze communities at default resolution
-        self.analyze_communities(resolution=1.0)
+            # Step 4: Analyze communities
+            self.analyze_communities()
 
-        # Step 5: Compute coherence scores
-        self.compute_community_coherence(resolution=1.0)
+            # Step 5: Compute coherence scores
+            self.compute_community_coherence()
 
-        # Step 6: Visualization
-        self.visualize_communities_umap(resolution=1.0)
+            # Step 6: Visualization (with error handling)
+            try:
+                self.visualize_communities_umap()
+            except Exception as e:
+                print(f"Skipping UMAP visualization due to error: {e}")
 
-        # Step 7: Compare with hierarchical clustering
-        self.hierarchical_clustering_comparison()
+            # Step 7: Compare with hierarchical clustering
+            self.hierarchical_clustering_comparison()
 
-        print("\n" + "=" * 60)
-        print("ANALYSIS COMPLETE")
-        print(f"All results saved to: {self.output_dir}")
-        print("=" * 60)
+            print("\n" + "=" * 60)
+            print("ANALYSIS COMPLETE")
+            print(f"All results saved to: {self.output_dir}")
+            print("=" * 60)
+
+        except Exception as e:
+            print(f"Error during analysis: {e}")
+            import traceback
+
+            traceback.print_exc()
+        finally:
+            # Cleanup
+            plt.close("all")
+            import gc
+
+            gc.collect()
 
 
 # Usage example
 if __name__ == "__main__":
-    # Initialize analyzer
-    analyzer = SubregisterAnalyzer(
-        "../data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/sm/en_embeds_ID.pkl"
-    )
+    try:
+        # Initialize analyzer
+        analyzer = SubregisterAnalyzer(
+            "../data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/sm/en_embeds_ID.pkl"
+        )
 
-    # Run complete analysis
-    analyzer.run_full_analysis(k=30, resolutions=[0.5, 1.0, 1.5, 2.0])
+        # Run simplified analysis (resolution=1.0 only)
+        analyzer.run_full_analysis(k=30)
 
-    # Additional analysis at different resolutions
-    print("\n" + "=" * 50)
-    print("DETAILED ANALYSIS AT DIFFERENT RESOLUTIONS")
-    print("=" * 50)
+    except Exception as e:
+        print(f"Fatal error: {e}")
+        import traceback
 
-    for resolution in [0.5, 1.0, 1.5]:
-        analyzer.analyze_communities(resolution=resolution, top_n=3)
-        analyzer.visualize_communities_umap(resolution=resolution)
+        traceback.print_exc()
+    finally:
+        # Final cleanup
+        plt.close("all")
+        import gc
+
+        gc.collect()
+        print("Analysis completed with cleanup.")
