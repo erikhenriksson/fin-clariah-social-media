@@ -22,18 +22,17 @@ for filename in files:
             outfile, delimiter="\t", quoting=csv.QUOTE_NONE, escapechar=None
         )
 
-        # Copy header
+        # Copy header and find preds column index
         header = next(reader)
         writer.writerow(header)
+        preds_index = header.index("preds")
 
         # Process each row
         for row in reader:
-            preds_str = row[7]  # preds column is index 7
+            preds_str = row[preds_index]
 
             # Parse the string as a Python list
             preds_list = ast.literal_eval(preds_str)
-
-            print(preds_list)
 
             # Check if any target value is in the preds list
             if any(pred in target_values for pred in preds_list):
