@@ -13,15 +13,17 @@ print(f"First data line: {repr(lines[1])}")
 print(f"Second data line: {repr(lines[2])}")
 
 # Count tabs in header vs first few data lines
-header_tabs = lines[0].count("\t")
+tab_char = "\t"
+header_tabs = lines[0].count(tab_char)
 print(f"\nTabs in header: {header_tabs}")
-print(f"Tabs in line 1: {lines[1].count('\t')}")
-print(f"Tabs in line 2: {lines[2].count('\t')}")
+print(f"Tabs in line 1: {lines[1].count(tab_char)}")
+print(f"Tabs in line 2: {lines[2].count(tab_char)}")
 
 # Check for quotes
-print(f"\nQuotes in header: {lines[0].count('\"')}")
-print(f"Quotes in line 1: {lines[1].count('\"')}")
-print(f"Quotes in line 2: {lines[2].count('\"')}")
+quote_char = '"'
+print(f"\nQuotes in header: {lines[0].count(quote_char)}")
+print(f"Quotes in line 1: {lines[1].count(quote_char)}")
+print(f"Quotes in line 2: {lines[2].count(quote_char)}")
 
 print("\n=== CSV PARSER TEST ===")
 # Test CSV parsing
