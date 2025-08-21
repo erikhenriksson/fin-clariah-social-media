@@ -33,6 +33,8 @@ for filename in files:
             # Parse the string as a Python list
             preds_list = ast.literal_eval(preds_str)
 
+            print(preds_list)
+
             # Check if any target value is in the preds list
             if any(pred in target_values for pred in preds_list):
                 writer.writerow(row)
