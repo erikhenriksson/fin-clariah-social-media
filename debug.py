@@ -5,25 +5,26 @@ filename = "../data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/sm/en_embeds
 
 print("=== RAW FILE INSPECTION ===")
 with open(filename, "r", encoding="utf-8") as f:
-    lines = f.readlines()
+    header = f.readline()
+    line1 = f.readline()
+    line2 = f.readline()
 
-print(f"Total lines in file: {len(lines)}")
-print(f"Header line: {repr(lines[0])}")
-print(f"First data line: {repr(lines[1])}")
-print(f"Second data line: {repr(lines[2])}")
+print(f"Header line: {repr(header)}")
+print(f"First data line: {repr(line1)}")
+print(f"Second data line: {repr(line2)}")
 
 # Count tabs in header vs first few data lines
 tab_char = "\t"
-header_tabs = lines[0].count(tab_char)
+header_tabs = header.count(tab_char)
 print(f"\nTabs in header: {header_tabs}")
-print(f"Tabs in line 1: {lines[1].count(tab_char)}")
-print(f"Tabs in line 2: {lines[2].count(tab_char)}")
+print(f"Tabs in line 1: {line1.count(tab_char)}")
+print(f"Tabs in line 2: {line2.count(tab_char)}")
 
 # Check for quotes
 quote_char = '"'
-print(f"\nQuotes in header: {lines[0].count(quote_char)}")
-print(f"Quotes in line 1: {lines[1].count(quote_char)}")
-print(f"Quotes in line 2: {lines[2].count(quote_char)}")
+print(f"\nQuotes in header: {header.count(quote_char)}")
+print(f"Quotes in line 1: {line1.count(quote_char)}")
+print(f"Quotes in line 2: {line2.count(quote_char)}")
 
 print("\n=== CSV PARSER TEST ===")
 # Test CSV parsing
