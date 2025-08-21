@@ -1,6 +1,8 @@
+import os
 import pickle
 import warnings
 from collections import Counter
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -22,7 +24,16 @@ warnings.filterwarnings("ignore")
 class SubregisterAnalyzer:
     def __init__(self, pickle_path):
         """Load and initialize the embedding data"""
+        self.pickle_path = pickle_path
+
+        # Create output directory named after input file
+        input_filename = Path(pickle_path).stem  # removes extension
+        self.output_dir = Path(f"analysis_{input_filename}")
+        self.output_dir.mkdir(exist_ok=True)
+
         print(f"Loading data from {pickle_path}...")
+        print(f"Output will be saved to: {self.output_dir}")
+
         with open(pickle_path, "rb") as f:
             self.data = pickle.load(f)
 
@@ -139,7 +150,7 @@ class SubregisterAnalyzer:
         )
         embedding_2d = umap_model.fit_transform(embeddings_vis)
 
-        # Plot
+        # Plot and save
         plt.figure(figsize=(12, 8))
         scatter = plt.scatter(
             embedding_2d[:, 0],
@@ -153,7 +164,12 @@ class SubregisterAnalyzer:
         plt.title(f"UMAP Visualization of Communities (resolution={resolution})")
         plt.xlabel("UMAP 1")
         plt.ylabel("UMAP 2")
-        plt.show()
+
+        # Save plot
+        plot_path = self.output_dir / f"umap_communities_res_{resolution}.png"
+        plt.savefig(plot_path, dpi=300, bbox_inches="tight")
+        plt.close()
+        print(f"UMAP plot saved to: {plot_path}")
 
         return embedding_2d, communities_vis
 
@@ -161,28 +177,45 @@ class SubregisterAnalyzer:
         """Analyze and sample documents from each community"""
         communities = self.community_results[resolution]
 
-        print(f"\n=== COMMUNITY ANALYSIS (resolution={resolution}) ===")
+        analysis_text = f"\n=== COMMUNITY ANALYSIS (resolution={resolution}) ===\n"
+        print(analysis_text)
 
-        for community_id in sorted(set(communities)):
-            members = np.where(communities == community_id)[0]
+        # Save analysis to file
+        analysis_file = self.output_dir / f"community_analysis_res_{resolution}.txt"
 
-            print(f"\n--- Community {community_id} ({len(members)} documents) ---")
+        with open(analysis_file, "w", encoding="utf-8") as f:
+            f.write(analysis_text)
 
-            # Sample representative documents
-            sample_indices = np.random.choice(
-                members, min(top_n, len(members)), replace=False
-            )
+            for community_id in sorted(set(communities)):
+                members = np.where(communities == community_id)[0]
 
-            for i, idx in enumerate(sample_indices):
-                text_preview = (
-                    self.texts[idx][:200] + "..."
-                    if len(self.texts[idx]) > 200
-                    else self.texts[idx]
+                section = (
+                    f"\n--- Community {community_id} ({len(members)} documents) ---\n"
                 )
-                print(f"{i + 1}. [{idx}] {text_preview}")
+                print(section)
+                f.write(section)
 
-            if len(members) > top_n:
-                print(f"... and {len(members) - top_n} more documents")
+                # Sample representative documents
+                sample_indices = np.random.choice(
+                    members, min(top_n, len(members)), replace=False
+                )
+
+                for i, idx in enumerate(sample_indices):
+                    text_preview = (
+                        self.texts[idx][:200] + "..."
+                        if len(self.texts[idx]) > 200
+                        else self.texts[idx]
+                    )
+                    line = f"{i + 1}. [{idx}] {text_preview}\n"
+                    print(line.strip())
+                    f.write(line)
+
+                if len(members) > top_n:
+                    remaining = f"... and {len(members) - top_n} more documents\n"
+                    print(remaining.strip())
+                    f.write(remaining)
+
+        print(f"Community analysis saved to: {analysis_file}")
 
     def compute_community_coherence(self, resolution=1.0):
         """Compute intra-community coherence scores"""
@@ -190,6 +223,8 @@ class SubregisterAnalyzer:
         coherence_scores = {}
 
         print(f"Computing community coherence scores...")
+
+        coherence_text = "Community Coherence Scores:\n"
 
         for community_id in set(communities):
             members = np.where(communities == community_id)[0]
@@ -207,10 +242,18 @@ class SubregisterAnalyzer:
             coherence = np.mean(upper_triangle[upper_triangle > 0])
             coherence_scores[community_id] = coherence
 
-        # Print results
+        # Print and save results
         print("\nCommunity Coherence Scores:")
         for community_id, score in sorted(coherence_scores.items()):
-            print(f"Community {community_id}: {score:.3f}")
+            line = f"Community {community_id}: {score:.3f}"
+            print(line)
+            coherence_text += line + "\n"
+
+        # Save coherence scores
+        coherence_file = self.output_dir / f"coherence_scores_res_{resolution}.txt"
+        with open(coherence_file, "w", encoding="utf-8") as f:
+            f.write(coherence_text)
+        print(f"Coherence scores saved to: {coherence_file}")
 
         return coherence_scores
 
@@ -220,6 +263,8 @@ class SubregisterAnalyzer:
 
         self.hierarchical_results = {}
 
+        comparison_text = "Hierarchical Clustering Comparison:\n\n"
+
         for n_clusters in n_clusters_range:
             clustering = AgglomerativeClustering(
                 n_clusters=n_clusters, metric="cosine", linkage="average"
@@ -227,15 +272,39 @@ class SubregisterAnalyzer:
             clusters = clustering.fit_predict(self.embeddings_pca_norm)
             self.hierarchical_results[n_clusters] = clusters
 
-            print(f"Hierarchical clustering with {n_clusters} clusters:")
             cluster_sizes = Counter(clusters)
-            print(f"  Cluster sizes: {dict(sorted(cluster_sizes.items()))}")
+
+            line = f"Hierarchical clustering with {n_clusters} clusters:\n"
+            sizes_line = f"  Cluster sizes: {dict(sorted(cluster_sizes.items()))}\n\n"
+
+            print(line.strip())
+            print(sizes_line.strip())
+
+            comparison_text += line + sizes_line
+
+        # Save comparison results
+        comparison_file = self.output_dir / "hierarchical_comparison.txt"
+        with open(comparison_file, "w", encoding="utf-8") as f:
+            f.write(comparison_text)
+        print(f"Hierarchical clustering comparison saved to: {comparison_file}")
 
     def run_full_analysis(self, k=30, resolutions=[0.5, 1.0, 1.5, 2.0]):
         """Run the complete subregister discovery pipeline"""
         print("=" * 60)
         print("SUBREGISTER DISCOVERY ANALYSIS")
         print("=" * 60)
+
+        # Save summary info
+        summary_file = self.output_dir / "analysis_summary.txt"
+        with open(summary_file, "w", encoding="utf-8") as f:
+            f.write("SUBREGISTER DISCOVERY ANALYSIS SUMMARY\n")
+            f.write("=" * 60 + "\n\n")
+            f.write(f"Input file: {self.pickle_path}\n")
+            f.write(f"Number of documents: {len(self.embeddings)}\n")
+            f.write(f"Embedding dimension: {self.embeddings.shape[1]}\n")
+            f.write(f"Register distribution: {dict(Counter(self.labels))}\n")
+            f.write(f"k-NN parameter: {k}\n")
+            f.write(f"Resolutions tested: {resolutions}\n\n")
 
         # Step 1: Dimensionality reduction
         self.reduce_dimensions()
@@ -260,6 +329,7 @@ class SubregisterAnalyzer:
 
         print("\n" + "=" * 60)
         print("ANALYSIS COMPLETE")
+        print(f"All results saved to: {self.output_dir}")
         print("=" * 60)
 
 
@@ -280,3 +350,4 @@ if __name__ == "__main__":
 
     for resolution in [0.5, 1.0, 1.5]:
         analyzer.analyze_communities(resolution=resolution, top_n=3)
+        analyzer.visualize_communities_umap(resolution=resolution)
