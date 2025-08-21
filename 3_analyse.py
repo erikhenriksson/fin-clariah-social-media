@@ -57,8 +57,17 @@ class SubregisterAnalyzer:
             self.embeddings, axis=1, keepdims=True
         )
 
-    def reduce_dimensions(self, n_components=50):
+    def reduce_dimensions(self, n_components=40):
         """Apply PCA for noise reduction and speedup"""
+        # Adaptive n_components based on data size
+        max_components = min(len(self.embeddings), self.embeddings.shape[1]) - 1
+        n_components = min(n_components, max_components)
+
+        if n_components < 2:
+            print(f"Warning: Only {len(self.embeddings)} documents, skipping PCA")
+            self.embeddings_pca_norm = self.embeddings_norm
+            return self.embeddings_pca_norm
+
         print(f"Applying PCA to reduce to {n_components} dimensions...")
         self.pca = PCA(n_components=n_components, random_state=42)
         self.embeddings_pca = self.pca.fit_transform(self.embeddings_norm)
@@ -69,11 +78,15 @@ class SubregisterAnalyzer:
         )
 
         total_variance = self.pca.explained_variance_ratio_.sum()
-        first_10_variance = self.pca.explained_variance_ratio_[:10].sum()
+        first_10_variance = self.pca.explained_variance_ratio_[
+            : min(10, n_components)
+        ].sum()
         print(
             f"PCA total variance explained: {total_variance:.3f} (all {n_components} components)"
         )
-        print(f"First 10 components explain: {first_10_variance:.3f} of total variance")
+        print(
+            f"First {min(10, n_components)} components explain: {first_10_variance:.3f} of total variance"
+        )
         return self.embeddings_pca_norm
 
     def build_knn_graph(self, k=None, use_pca=True):
@@ -222,7 +235,7 @@ class SubregisterAnalyzer:
 
             # Save plot
             plot_path = self.output_dir / "umap_communities.png"
-            plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+            plt.savefig(plot_path, dpi=300, bbox_inches="tight")
             plt.close()
 
             # Create a legend mapping colors to community IDs
@@ -266,7 +279,7 @@ class SubregisterAnalyzer:
 
             # Save legend
             legend_path = self.output_dir / "community_legend.png"
-            plt.savefig(legend_path, dpi=150, bbox_inches="tight")
+            plt.savefig(legend_path, dpi=300, bbox_inches="tight")
             plt.close()
 
             print(f"Community legend saved to: {legend_path}")
@@ -505,7 +518,7 @@ class SubregisterAnalyzer:
 
             # Save plot
             plot_path = self.output_dir / "silhouette_plot.png"
-            plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+            plt.savefig(plot_path, dpi=300, bbox_inches="tight")
             plt.close()
 
             print(f"Silhouette plot saved to: {plot_path}")
@@ -514,36 +527,184 @@ class SubregisterAnalyzer:
             print(f"Error creating silhouette plot: {e}")
             plt.close("all")
 
-    def hierarchical_clustering_comparison(self, n_clusters_range=[5, 10, 15, 20]):
+    def hierarchical_clustering_comparison(self):
         """Compare with hierarchical clustering for validation"""
         print("Running hierarchical clustering comparison...")
 
+        # Get number of communities found by Leiden for fair comparison
+        leiden_communities = self.community_results[1.0]
+        n_leiden_communities = len(set(leiden_communities))
+
+        # Test hierarchical clustering with same number of clusters as Leiden
+        n_clusters_range = [
+            n_leiden_communities - 2,
+            n_leiden_communities,
+            n_leiden_communities + 2,
+        ]
+        n_clusters_range = [
+            max(2, n) for n in n_clusters_range
+        ]  # Ensure at least 2 clusters
+
         self.hierarchical_results = {}
 
-        comparison_text = "Hierarchical Clustering Comparison:\n\n"
+        comparison_text = "HIERARCHICAL CLUSTERING COMPARISON\n"
+        comparison_text += "==================================\n\n"
+        comparison_text += f"Leiden found {n_leiden_communities} communities\n"
+        comparison_text += (
+            f"Testing hierarchical clustering with different cluster numbers\n\n"
+        )
+
+        print(f"Leiden found {n_leiden_communities} communities")
+        print(f"Testing hierarchical clustering with: {n_clusters_range} clusters")
 
         for n_clusters in n_clusters_range:
+            print(f"\nHierarchical clustering with {n_clusters} clusters:")
+
+            # Run hierarchical clustering
             clustering = AgglomerativeClustering(
                 n_clusters=n_clusters, metric="cosine", linkage="average"
             )
             clusters = clustering.fit_predict(self.embeddings_pca_norm)
             self.hierarchical_results[n_clusters] = clusters
 
+            # Compute silhouette score for this clustering
+            try:
+                h_silhouette = silhouette_score(
+                    self.embeddings_pca_norm, clusters, metric="cosine"
+                )
+                print(f"  Silhouette score: {h_silhouette:.3f}")
+                comparison_text += f"Hierarchical with {n_clusters} clusters:\n"
+                comparison_text += f"  Silhouette score: {h_silhouette:.3f}\n"
+            except Exception as e:
+                print(f"  Could not compute silhouette: {e}")
+                comparison_text += f"Hierarchical with {n_clusters} clusters:\n"
+                comparison_text += f"  Silhouette computation failed\n"
+
+            # Cluster sizes
             cluster_sizes = Counter(clusters)
+            sizes_str = f"  Cluster sizes: {dict(sorted(cluster_sizes.items()))}"
+            print(sizes_str)
+            comparison_text += sizes_str + "\n\n"
 
-            line = f"Hierarchical clustering with {n_clusters} clusters:\n"
-            sizes_line = f"  Cluster sizes: {dict(sorted(cluster_sizes.items()))}\n\n"
+        # Add comparison with Leiden results
+        try:
+            leiden_silhouette = silhouette_score(
+                self.embeddings_pca_norm, leiden_communities, metric="cosine"
+            )
+            comparison_text += f"COMPARISON SUMMARY:\n"
+            comparison_text += f"Leiden communities ({n_leiden_communities}): {leiden_silhouette:.3f}\n"
 
-            print(line.strip())
-            print(sizes_line.strip())
+            # Find best hierarchical result
+            best_h_score = -1
+            best_h_clusters = None
+            for n_clusters in n_clusters_range:
+                try:
+                    clusters = self.hierarchical_results[n_clusters]
+                    score = silhouette_score(
+                        self.embeddings_pca_norm, clusters, metric="cosine"
+                    )
+                    comparison_text += (
+                        f"Hierarchical ({n_clusters} clusters): {score:.3f}\n"
+                    )
+                    if score > best_h_score:
+                        best_h_score = score
+                        best_h_clusters = n_clusters
+                except:
+                    continue
 
-            comparison_text += line + sizes_line
+            if best_h_clusters:
+                comparison_text += f"\nBest method: "
+                if leiden_silhouette > best_h_score:
+                    comparison_text += f"Leiden (score: {leiden_silhouette:.3f})\n"
+                    print(
+                        f"\n✓ Leiden communities perform better (silhouette: {leiden_silhouette:.3f} vs {best_h_score:.3f})"
+                    )
+                else:
+                    comparison_text += f"Hierarchical with {best_h_clusters} clusters (score: {best_h_score:.3f})\n"
+                    print(
+                        f"\n✓ Hierarchical clustering performs better ({best_h_clusters} clusters, silhouette: {best_h_score:.3f} vs {leiden_silhouette:.3f})"
+                    )
+
+        except Exception as e:
+            print(f"Could not compare silhouette scores: {e}")
+
+        # Create comparison visualization
+        self._plot_clustering_comparison()
 
         # Save comparison results
         comparison_file = self.output_dir / "hierarchical_comparison.txt"
         with open(comparison_file, "w", encoding="utf-8") as f:
             f.write(comparison_text)
         print(f"Hierarchical clustering comparison saved to: {comparison_file}")
+
+    def _plot_clustering_comparison(self):
+        """Create comparison plot of Leiden vs Hierarchical clustering"""
+        try:
+            leiden_communities = self.community_results[1.0]
+            n_leiden = len(set(leiden_communities))
+
+            # Use the hierarchical result with same number of clusters as Leiden
+            if n_leiden in self.hierarchical_results:
+                hierarchical_clusters = self.hierarchical_results[n_leiden]
+            else:
+                # Use closest available
+                available_ns = list(self.hierarchical_results.keys())
+                closest_n = min(available_ns, key=lambda x: abs(x - n_leiden))
+                hierarchical_clusters = self.hierarchical_results[closest_n]
+
+            # Create side-by-side comparison using UMAP projection
+            # Reuse UMAP projection if available, otherwise create simple 2D projection
+            if hasattr(self, "umap_projection"):
+                embedding_2d = self.umap_projection
+            else:
+                # Simple PCA projection for comparison plot
+                from sklearn.decomposition import PCA
+
+                pca_2d = PCA(n_components=2, random_state=42)
+                embedding_2d = pca_2d.fit_transform(self.embeddings_pca_norm)
+
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 7))
+
+            # Leiden communities plot
+            scatter1 = ax1.scatter(
+                embedding_2d[:, 0],
+                embedding_2d[:, 1],
+                c=leiden_communities,
+                cmap="tab20",
+                alpha=0.7,
+                s=8,
+            )
+            ax1.set_title(f"Leiden Communities ({n_leiden} communities)")
+            ax1.set_xlabel("Dimension 1")
+            ax1.set_ylabel("Dimension 2")
+
+            # Hierarchical clustering plot
+            scatter2 = ax2.scatter(
+                embedding_2d[:, 0],
+                embedding_2d[:, 1],
+                c=hierarchical_clusters,
+                cmap="tab20",
+                alpha=0.7,
+                s=8,
+            )
+            ax2.set_title(
+                f"Hierarchical Clustering ({len(set(hierarchical_clusters))} clusters)"
+            )
+            ax2.set_xlabel("Dimension 1")
+            ax2.set_ylabel("Dimension 2")
+
+            plt.tight_layout()
+
+            # Save comparison plot
+            plot_path = self.output_dir / "clustering_comparison.png"
+            plt.savefig(plot_path, dpi=300, bbox_inches="tight")
+            plt.close()
+
+            print(f"Clustering comparison plot saved to: {plot_path}")
+
+        except Exception as e:
+            print(f"Error creating clustering comparison plot: {e}")
+            plt.close("all")
 
     def run_full_analysis(self):
         """Run the complete subregister discovery pipeline"""
@@ -579,13 +740,19 @@ class SubregisterAnalyzer:
             # Step 5: Compute coherence scores
             self.compute_community_coherence()
 
-            # Step 6: Visualization (with error handling)
+            # Step 6: Compute silhouette scores
+            self.compute_silhouette_analysis()
+
+            # Step 6: Compute silhouette scores
+            self.compute_silhouette_analysis()
+
+            # Step 7: Visualization (with error handling)
             try:
                 self.visualize_communities_umap()
             except Exception as e:
                 print(f"Skipping UMAP visualization due to error: {e}")
 
-            # Step 7: Compare with hierarchical clustering
+            # Step 8: Compare with hierarchical clustering
             self.hierarchical_clustering_comparison()
 
             print("\n" + "=" * 60)
