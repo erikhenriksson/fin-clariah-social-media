@@ -82,7 +82,7 @@ class SubregisterAnalyzer:
 
         return self.embeddings_pca_norm
 
-    def find_optimal_k(self, k_range=[2, 3, 4, 5, 6, 7, 8]):
+    def find_optimal_k(self, k_range=[2, 3, 4, 5, 6]):
         """Find optimal number of clusters using multiple criteria"""
         print("=" * 60)
         print("FINDING OPTIMAL NUMBER OF CLUSTERS (K-MEANS)")
