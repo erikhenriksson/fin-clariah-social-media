@@ -154,93 +154,6 @@ class SubregisterAnalyzer:
 
         return communities
 
-    def find_optimal_resolution(
-        self, resolutions=[0.3, 0.5, 0.7, 1.0, 1.3, 1.5, 1.7, 2.0]
-    ):
-        """Find optimal resolution based on silhouette scores"""
-        print("=" * 50)
-        print("FINDING OPTIMAL RESOLUTION")
-        print("=" * 50)
-
-        resolution_scores = {}
-
-        for resolution in resolutions:
-            print(f"\\nTesting resolution {resolution}...")
-            try:
-                # Detect communities at this resolution
-                communities = self.detect_communities_leiden(resolution=resolution)
-
-                # Skip if too few or too many communities
-                n_communities = len(set(communities))
-                if n_communities < 2:
-                    print(f"  Skipping: Only {n_communities} community found")
-                    continue
-                if (
-                    n_communities > len(self.embeddings) // 5
-                ):  # Avoid too many tiny communities
-                    print(f"  Skipping: Too many communities ({n_communities})")
-                    continue
-
-                # Compute silhouette score
-                silhouette = silhouette_score(
-                    self.embeddings_pca_norm, communities, metric="cosine"
-                )
-
-                resolution_scores[resolution] = {
-                    "silhouette": silhouette,
-                    "n_communities": n_communities,
-                    "communities": communities,
-                }
-
-                print(
-                    f"  Resolution {resolution}: {silhouette:.3f} silhouette, {n_communities} communities"
-                )
-
-            except Exception as e:
-                print(f"  Error at resolution {resolution}: {e}")
-                continue
-
-        if not resolution_scores:
-            raise ValueError(
-                "No valid resolution found. Dataset may be too difficult to cluster."
-            )
-
-        # Find optimal resolution
-        optimal_resolution = max(
-            resolution_scores.keys(), key=lambda r: resolution_scores[r]["silhouette"]
-        )
-        optimal_score = resolution_scores[optimal_resolution]["silhouette"]
-        optimal_communities = resolution_scores[optimal_resolution]["communities"]
-
-        print(f"\\n" + "=" * 50)
-        print(f"OPTIMAL RESOLUTION FOUND: {optimal_resolution}")
-        print(f"Silhouette Score: {optimal_score:.3f}")
-        print(
-            f"Number of Communities: {resolution_scores[optimal_resolution]['n_communities']}"
-        )
-        print("=" * 50)
-
-        # Save optimization results
-        optimization_file = self.output_dir / "resolution_optimization.txt"
-        with open(optimization_file, "w", encoding="utf-8") as f:
-            f.write("RESOLUTION OPTIMIZATION RESULTS\n")
-            f.write("=" * 40 + "\n\n")
-            f.write(f"Optimal Resolution: {optimal_resolution}\n")
-            f.write(f"Optimal Silhouette Score: {optimal_score:.3f}\n")
-            f.write(
-                f"Number of Communities: {resolution_scores[optimal_resolution]['n_communities']}\n\n"
-            )
-            f.write("All Tested Resolutions:\n")
-            for res in sorted(resolution_scores.keys()):
-                score = resolution_scores[res]["silhouette"]
-                n_comm = resolution_scores[res]["n_communities"]
-                marker = " <- OPTIMAL" if res == optimal_resolution else ""
-                f.write(
-                    f"  {res}: {score:.3f} silhouette, {n_comm} communities{marker}\n"
-                )
-
-        print(f"Resolution optimization results saved to: {optimization_file}")
-
     def compute_coherence_for_communities(self, communities):
         """Compute coherence scores for a set of communities (memory-efficient)"""
         coherence_scores = {}
@@ -277,48 +190,138 @@ class SubregisterAnalyzer:
 
         return coherence_scores
 
+    def find_optimal_resolution(
+        self, resolutions=[0.3, 0.5, 0.7, 1.0, 1.3, 1.5, 1.7, 2.0]
+    ):
+        """Find optimal resolution based on AVERAGE COMMUNITY COHERENCE scores"""
+        print("=" * 60)
+        print("FINDING OPTIMAL RESOLUTION BASED ON COHERENCE")
+        print("=" * 60)
+
+        resolution_scores = {}
+
+        for resolution in resolutions:
+            print(f"\nTesting resolution {resolution}...")
+            try:
+                # Detect communities at this resolution
+                communities = self.detect_communities_leiden(resolution=resolution)
+
+                # Skip if too few or too many communities
+                n_communities = len(set(communities))
+                if n_communities < 2:
+                    print(f"  Skipping: Only {n_communities} community found")
+                    continue
+                if (
+                    n_communities > len(self.embeddings) // 5
+                ):  # Avoid too many tiny communities
+                    print(f"  Skipping: Too many communities ({n_communities})")
+                    continue
+
+                # Compute coherence scores for all communities
+                print(f"  Computing coherence for {n_communities} communities...")
+                coherence_scores = self.compute_coherence_for_communities(communities)
+
+                # Calculate average coherence (excluding zero scores from tiny communities)
+                valid_coherences = [
+                    score for score in coherence_scores.values() if score > 0
+                ]
+                if not valid_coherences:
+                    print(f"  Skipping: No valid coherence scores")
+                    continue
+
+                avg_coherence = np.mean(valid_coherences)
+
+                # Also compute silhouette for comparison (but don't use for optimization)
+                silhouette = silhouette_score(
+                    self.embeddings_pca_norm, communities, metric="cosine"
+                )
+
+                resolution_scores[resolution] = {
+                    "avg_coherence": avg_coherence,
+                    "silhouette": silhouette,
+                    "n_communities": n_communities,
+                    "communities": communities,
+                    "coherence_scores": coherence_scores,
+                }
+
+                print(
+                    f"  Resolution {resolution}: AVG COHERENCE = {avg_coherence:.3f}, silhouette = {silhouette:.3f}, {n_communities} communities"
+                )
+
+            except Exception as e:
+                print(f"  Error at resolution {resolution}: {e}")
+                continue
+
+        if not resolution_scores:
+            raise ValueError(
+                "No valid resolution found. Dataset may be too difficult to cluster."
+            )
+
+        # Find optimal resolution based on AVERAGE COHERENCE (NOT silhouette)
+        optimal_resolution = max(
+            resolution_scores.keys(),
+            key=lambda r: resolution_scores[r]["avg_coherence"],
+        )
+        optimal_coherence = resolution_scores[optimal_resolution]["avg_coherence"]
+        optimal_silhouette = resolution_scores[optimal_resolution]["silhouette"]
+        optimal_communities = resolution_scores[optimal_resolution]["communities"]
+
+        print(f"\n" + "=" * 60)
+        print(f"OPTIMAL RESOLUTION FOUND: {optimal_resolution}")
+        print(f"OPTIMIZATION CRITERION: Average Community Coherence")
+        print(f"Best Average Coherence Score: {optimal_coherence:.3f}")
+        print(f"Corresponding Silhouette Score: {optimal_silhouette:.3f}")
+        print(
+            f"Number of Communities: {resolution_scores[optimal_resolution]['n_communities']}"
+        )
+        print("=" * 60)
+
+        # Save optimization results
+        optimization_file = self.output_dir / "resolution_optimization.txt"
+        with open(optimization_file, "w", encoding="utf-8") as f:
+            f.write("RESOLUTION OPTIMIZATION RESULTS\n")
+            f.write("=" * 50 + "\n\n")
+            f.write(f"OPTIMIZATION CRITERION: Average Community Coherence\n")
+            f.write(f"Optimal Resolution: {optimal_resolution}\n")
+            f.write(f"Best Average Coherence: {optimal_coherence:.3f}\n")
+            f.write(f"Corresponding Silhouette Score: {optimal_silhouette:.3f}\n")
+            f.write(
+                f"Number of Communities: {resolution_scores[optimal_resolution]['n_communities']}\n\n"
+            )
+            f.write("All Tested Resolutions:\n")
+            f.write("Resolution | Avg Coherence | Silhouette | Communities\n")
+            f.write("-" * 55 + "\n")
+            for res in sorted(resolution_scores.keys()):
+                avg_coh = resolution_scores[res]["avg_coherence"]
+                sil = resolution_scores[res]["silhouette"]
+                n_comm = resolution_scores[res]["n_communities"]
+                marker = (
+                    " <- OPTIMAL (Best Coherence)" if res == optimal_resolution else ""
+                )
+                f.write(
+                    f"    {res:4.1f}  |     {avg_coh:.3f}     |   {sil:.3f}    |     {n_comm:3d}    {marker}\n"
+                )
+
+        print(f"Resolution optimization results saved to: {optimization_file}")
+
+        return optimal_resolution, optimal_communities, resolution_scores
+
     def analyze_communities(self, resolution, top_n=10):
         """Analyze and sample documents from each community"""
         communities = self.community_results[resolution]
 
-        # Compute coherence scores for all communities (memory-efficient)
-        print(
-            f"Computing coherence scores for community analysis (resolution={resolution})..."
-        )
+        # Compute coherence scores for all communities (already computed during optimization)
+        print(f"Analyzing communities at resolution {resolution}...")
+
+        # Get coherence scores from optimization results
         coherence_scores = {}
-
-        for community_id in set(communities):
-            members = np.where(communities == community_id)[0]
-
-            if len(members) < 2:
-                coherence_scores[community_id] = 0.0
-                continue
-
-            # Memory-efficient coherence computation for large communities
-            if len(members) > 1000:
-                # Sample for large communities to avoid memory issues
-                sample_size = min(500, len(members))
-                sample_members = np.random.choice(members, sample_size, replace=False)
-                community_embeddings = self.embeddings_pca_norm[sample_members]
-                print(
-                    f"  Community {community_id}: Sampling {sample_size}/{len(members)} documents for coherence"
-                )
-            else:
-                community_embeddings = self.embeddings_pca_norm[members]
-
-            # Compute average pairwise cosine similarity within community
-            similarity_matrix = cosine_similarity(community_embeddings)
-
-            # Get upper triangle (excluding diagonal)
-            upper_triangle = np.triu(similarity_matrix, k=1)
-            coherence = np.mean(upper_triangle[upper_triangle > 0])
-            coherence_scores[community_id] = coherence
-
-            # Clear memory
-            del similarity_matrix, upper_triangle
-            import gc
-
-            gc.collect()
+        if hasattr(self, "optimization_results"):
+            coherence_scores = self.optimization_results[resolution].get(
+                "coherence_scores", {}
+            )
+        else:
+            # Fallback: compute coherence scores
+            coherence_scores = self.compute_coherence_for_communities(communities)
 
         analysis_text = f"\n=== COMMUNITY ANALYSIS (resolution={resolution}) ===\n"
         print(analysis_text)
@@ -367,46 +370,21 @@ class SubregisterAnalyzer:
         print(f"Community analysis saved to: {analysis_file}")
 
     def compute_community_coherence(self, resolution):
-        """Compute intra-community coherence scores (memory-efficient)"""
+        """Compute intra-community coherence scores (reuse from optimization)"""
         communities = self.community_results[resolution]
-        coherence_scores = {}
 
         print(f"Computing community coherence scores (resolution={resolution})...")
 
+        # Get coherence scores from optimization results to avoid recomputation
+        if hasattr(self, "optimization_results"):
+            coherence_scores = self.optimization_results[resolution].get(
+                "coherence_scores", {}
+            )
+        else:
+            # Fallback: compute coherence scores
+            coherence_scores = self.compute_coherence_for_communities(communities)
+
         coherence_text = f"Community Coherence Scores (resolution={resolution}):\n"
-
-        for community_id in set(communities):
-            members = np.where(communities == community_id)[0]
-
-            if len(members) < 2:
-                coherence_scores[community_id] = 0.0
-                continue
-
-            # Memory-efficient coherence computation for large communities
-            if len(members) > 1000:
-                # Sample for large communities to avoid memory issues
-                sample_size = min(500, len(members))
-                sample_members = np.random.choice(members, sample_size, replace=False)
-                community_embeddings = self.embeddings_pca_norm[sample_members]
-                print(
-                    f"  Community {community_id}: Sampling {sample_size}/{len(members)} documents"
-                )
-            else:
-                community_embeddings = self.embeddings_pca_norm[members]
-
-            # Compute average pairwise cosine similarity within community
-            similarity_matrix = cosine_similarity(community_embeddings)
-
-            # Get upper triangle (excluding diagonal)
-            upper_triangle = np.triu(similarity_matrix, k=1)
-            coherence = np.mean(upper_triangle[upper_triangle > 0])
-            coherence_scores[community_id] = coherence
-
-            # Clear memory immediately
-            del similarity_matrix, upper_triangle, community_embeddings
-            import gc
-
-            gc.collect()
 
         # Print and save results
         print(f"\nCommunity Coherence Scores (resolution={resolution}):")
@@ -452,9 +430,9 @@ class SubregisterAnalyzer:
 
             # Print results
             print(
-                f"\\nOverall Silhouette Score (resolution={resolution}): {overall_silhouette:.3f}"
+                f"\nOverall Silhouette Score (resolution={resolution}): {overall_silhouette:.3f}"
             )
-            print(f"\\nPer-Community Silhouette Scores (resolution={resolution}):")
+            print(f"\nPer-Community Silhouette Scores (resolution={resolution}):")
 
             silhouette_text = f"SILHOUETTE ANALYSIS (resolution={resolution})\n"
             silhouette_text += f"==================\n\n"
@@ -478,7 +456,7 @@ class SubregisterAnalyzer:
             )
             with open(silhouette_file, "w", encoding="utf-8") as f:
                 f.write(silhouette_text)
-            print(f"\\nSilhouette analysis saved to: {silhouette_file}")
+            print(f"\nSilhouette analysis saved to: {silhouette_file}")
 
             return overall_silhouette, community_silhouettes
 
@@ -610,7 +588,7 @@ class SubregisterAnalyzer:
             plt.close("all")
 
     def run_full_analysis(self):
-        """Run the complete subregister discovery pipeline with automatic resolution optimization"""
+        """Run the complete subregister discovery pipeline with coherence-based resolution optimization"""
         try:
             print("=" * 60)
             print("SUBREGISTER DISCOVERY ANALYSIS")
@@ -622,13 +600,14 @@ class SubregisterAnalyzer:
             # Step 2: Build k-NN graph
             self.build_knn_graph()
 
-            # Step 3: Find optimal resolution
+            # Step 3: Find optimal resolution BASED ON COHERENCE
             optimal_resolution, optimal_communities, all_scores = (
                 self.find_optimal_resolution()
             )
 
-            # Store the optimal result
+            # Store results for reuse
             self.community_results = {optimal_resolution: optimal_communities}
+            self.optimization_results = all_scores
 
             # Save summary info
             summary_file = self.output_dir / "analysis_summary.txt"
@@ -640,29 +619,33 @@ class SubregisterAnalyzer:
                 f.write(f"Embedding dimension: {self.embeddings.shape[1]}\n")
                 f.write(f"Register distribution: {dict(Counter(self.labels))}\n")
                 f.write(f"k-NN parameter: auto-computed\n")
+                f.write(f"Optimization criterion: Average Community Coherence\n")
                 f.write(f"Optimal resolution: {optimal_resolution}\n")
                 f.write(
-                    f"Optimal avg coherence score: {all_scores[optimal_resolution]['avg_coherence']:.3f}\n"
+                    f"Best avg coherence score: {all_scores[optimal_resolution]['avg_coherence']:.3f}\n"
                 )
                 f.write(
-                    f"Optimal silhouette score: {all_scores[optimal_resolution]['silhouette']:.3f}\n"
+                    f"Corresponding silhouette score: {all_scores[optimal_resolution]['silhouette']:.3f}\n"
                 )
                 f.write(
                     f"Number of communities: {all_scores[optimal_resolution]['n_communities']}\n\n"
                 )
 
             # Step 4: Full analysis at optimal resolution
-            print(f"\\n{'=' * 50}")
+            print(f"\n{'=' * 60}")
             print(f"ANALYZING OPTIMAL RESOLUTION: {optimal_resolution}")
-            print(f"{'=' * 50}")
+            print(
+                f"CHOSEN FOR BEST AVERAGE COHERENCE: {all_scores[optimal_resolution]['avg_coherence']:.3f}"
+            )
+            print(f"{'=' * 60}")
 
             # Analyze communities
             self.analyze_communities(resolution=optimal_resolution)
 
-            # Compute coherence scores
+            # Compute coherence scores (reuse from optimization)
             self.compute_community_coherence(resolution=optimal_resolution)
 
-            # Compute silhouette scores (already computed, but save detailed analysis)
+            # Compute silhouette scores for validation
             self.compute_silhouette_analysis(resolution=optimal_resolution)
 
             # Visualization
@@ -673,7 +656,12 @@ class SubregisterAnalyzer:
 
             print("\n" + "=" * 60)
             print("ANALYSIS COMPLETE")
-            print(f"Optimal resolution: {optimal_resolution}")
+            print(
+                f"Optimal resolution: {optimal_resolution} (chosen for best coherence)"
+            )
+            print(
+                f"Best average coherence: {all_scores[optimal_resolution]['avg_coherence']:.3f}"
+            )
             print(f"All results saved to: {self.output_dir}")
             print("=" * 60)
 
@@ -716,14 +704,14 @@ if __name__ == "__main__":
 
     for i, pkl_file in enumerate(pkl_files, 1):
         try:
-            print(f"\\n{'=' * 60}")
+            print(f"\n{'=' * 60}")
             print(f"PROCESSING FILE {i}/{len(pkl_files)}: {os.path.basename(pkl_file)}")
             print(f"{'=' * 60}")
 
             # Initialize analyzer for this file
             analyzer = SubregisterAnalyzer(pkl_file, results_base_dir=results_dir)
 
-            # Run analysis with automatic resolution optimization
+            # Run analysis with COHERENCE-BASED resolution optimization
             analyzer.run_full_analysis()
 
             successful_analyses += 1
