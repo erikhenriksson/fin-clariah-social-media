@@ -157,10 +157,12 @@ class SubregisterAnalyzer:
             print(f"\nFinding resolution for {target_k} clusters...")
 
             # Binary search for resolution that gives target_k clusters
-            resolution_low = 0.01
-            resolution_high = 5.0
+            # Note: In Leiden, LOWER resolution = FEWER clusters
+            resolution_low = 0.01  # Very low resolution -> few clusters
+            resolution_high = 2.0  # Higher resolution -> more clusters
             best_resolution = None
-            max_iterations = 20
+            best_diff = float("inf")
+            max_iterations = 15
 
             for iteration in range(max_iterations):
                 resolution_mid = (resolution_low + resolution_high) / 2
@@ -173,18 +175,24 @@ class SubregisterAnalyzer:
                     f"  Iteration {iteration + 1}: resolution={resolution_mid:.3f} -> {n_communities} clusters"
                 )
 
-                if n_communities == target_k:
+                # Track the closest we've gotten to target
+                diff = abs(n_communities - target_k)
+                if diff < best_diff:
+                    best_diff = diff
                     best_resolution = resolution_mid
+
+                if n_communities == target_k:
+                    # Found exact match
                     break
-                elif n_communities < target_k:
-                    resolution_high = resolution_mid
                 elif n_communities > target_k:
+                    # Too many clusters, need LOWER resolution
+                    resolution_high = resolution_mid
+                elif n_communities < target_k:
+                    # Too few clusters, need HIGHER resolution
                     resolution_low = resolution_mid
 
                 # Stop if range is too narrow
                 if abs(resolution_high - resolution_low) < 0.001:
-                    # Choose the resolution that got closest to target
-                    best_resolution = resolution_mid
                     break
 
             if best_resolution is not None:
@@ -193,21 +201,27 @@ class SubregisterAnalyzer:
                     resolution=best_resolution
                 )
 
-                # Compute silhouette score for this clustering
-                silhouette = silhouette_score(
-                    self.embeddings_pca_norm, communities, metric="cosine"
-                )
+                # Only accept if we got reasonably close to target
+                if abs(n_communities - target_k) <= 1:  # Allow ±1 cluster difference
+                    # Compute silhouette score for this clustering
+                    silhouette = silhouette_score(
+                        self.embeddings_pca_norm, communities, metric="cosine"
+                    )
 
-                resolution_mapping[target_k] = {
-                    "resolution": best_resolution,
-                    "communities": communities,
-                    "n_communities": n_communities,
-                    "silhouette": silhouette,
-                }
+                    resolution_mapping[target_k] = {
+                        "resolution": best_resolution,
+                        "communities": communities,
+                        "n_communities": n_communities,
+                        "silhouette": silhouette,
+                    }
 
-                print(
-                    f"  ✓ Found: resolution={best_resolution:.3f} gives {n_communities} clusters (silhouette={silhouette:.3f})"
-                )
+                    print(
+                        f"  ✓ Found: resolution={best_resolution:.3f} gives {n_communities} clusters (silhouette={silhouette:.3f})"
+                    )
+                else:
+                    print(
+                        f"  ✗ Could not get close enough to {target_k} clusters (got {n_communities})"
+                    )
             else:
                 print(f"  ✗ Could not find resolution for {target_k} clusters")
 
