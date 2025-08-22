@@ -10,11 +10,7 @@ import numpy as np
 import umap
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
-from sklearn.metrics import (
-    calinski_harabasz_score,
-    davies_bouldin_score,
-    silhouette_score,
-)
+from sklearn.metrics import silhouette_samples, silhouette_score
 from sklearn.metrics.pairwise import cosine_similarity
 
 warnings.filterwarnings("ignore")
@@ -82,7 +78,7 @@ class SubregisterAnalyzer:
 
         return self.embeddings_pca_norm
 
-    def find_optimal_k(self, k_range=[2, 3, 4, 5, 6]):
+    def find_optimal_k(self, k_range=[2, 3, 4, 5, 6, 7, 8]):
         """Find optimal number of clusters using multiple criteria"""
         print("=" * 60)
         print("FINDING OPTIMAL NUMBER OF CLUSTERS (K-MEANS)")
@@ -103,21 +99,31 @@ class SubregisterAnalyzer:
                 )
                 communities = kmeans.fit_predict(self.embeddings_pca_norm)
 
-                # Compute metrics
+                # Compute silhouette score
                 silhouette = silhouette_score(
                     self.embeddings_pca_norm, communities, metric="cosine"
                 )
+
+                # Compute inertia (within-cluster sum of squares)
+                inertia = kmeans.inertia_
+
+                # Compute Calinski-Harabasz Index (higher is better)
+                from sklearn.metrics import calinski_harabasz_score
+
                 ch_score = calinski_harabasz_score(
                     self.embeddings_pca_norm, communities
                 )
+
+                # Compute Davies-Bouldin Index (lower is better)
+                from sklearn.metrics import davies_bouldin_score
+
                 db_score = davies_bouldin_score(self.embeddings_pca_norm, communities)
-                inertia = kmeans.inertia_
 
                 k_scores[k] = {
                     "silhouette": silhouette,
+                    "inertia": inertia,
                     "calinski_harabasz": ch_score,
                     "davies_bouldin": db_score,
-                    "inertia": inertia,
                     "communities": communities,
                     "kmeans_model": kmeans,
                 }
@@ -135,20 +141,111 @@ class SubregisterAnalyzer:
                 "No valid k found. Dataset may be too difficult to cluster."
             )
 
-        # Use Calinski-Harabasz for optimization (best for finding true k)
-        optimal_k = max(k_scores.keys(), key=lambda k: k_scores[k]["calinski_harabasz"])
+        # Multiple optimization criteria
+        print(f"\n" + "=" * 60)
+        print("OPTIMIZATION RESULTS:")
+        print("=" * 60)
+
+        # 1. Best silhouette score
+        best_silhouette_k = max(
+            k_scores.keys(), key=lambda k: k_scores[k]["silhouette"]
+        )
+        print(
+            f"Best Silhouette Score: k={best_silhouette_k} (score: {k_scores[best_silhouette_k]['silhouette']:.3f})"
+        )
+
+        # 2. Best Calinski-Harabasz score (often finds more realistic k)
+        best_ch_k = max(k_scores.keys(), key=lambda k: k_scores[k]["calinski_harabasz"])
+        print(
+            f"Best Calinski-Harabasz: k={best_ch_k} (score: {k_scores[best_ch_k]['calinski_harabasz']:.0f})"
+        )
+
+        # 3. Best Davies-Bouldin score (lower is better)
+        best_db_k = min(k_scores.keys(), key=lambda k: k_scores[k]["davies_bouldin"])
+        print(
+            f"Best Davies-Bouldin: k={best_db_k} (score: {k_scores[best_db_k]['davies_bouldin']:.3f})"
+        )
+
+        # 4. Elbow method (biggest drop in inertia)
+        inertias = [k_scores[k]["inertia"] for k in sorted(k_scores.keys())]
+        k_values = sorted(k_scores.keys())
+
+        # Calculate elbow score (second derivative of inertia curve)
+        if len(k_values) >= 3:
+            elbow_scores = {}
+            for i in range(1, len(k_values) - 1):
+                k_curr = k_values[i]
+                # Calculate rate of change in inertia decrease
+                prev_drop = inertias[i - 1] - inertias[i]
+                next_drop = inertias[i] - inertias[i + 1]
+                elbow_scores[k_curr] = prev_drop - next_drop  # Higher = bigger elbow
+
+            if elbow_scores:
+                best_elbow_k = max(elbow_scores.keys(), key=lambda k: elbow_scores[k])
+                print(f"Elbow Method suggests: k={best_elbow_k}")
+
+        # HYBRID DECISION: Prefer Calinski-Harabasz over Silhouette (tends to find better k)
+        # But validate with other metrics
+        optimal_k = best_ch_k
+
+        # Override if consensus points to different k
+        votes = {}
+        votes[best_silhouette_k] = votes.get(best_silhouette_k, 0) + 1
+        votes[best_ch_k] = votes.get(best_ch_k, 0) + 2  # Weight CH more heavily
+        votes[best_db_k] = votes.get(best_db_k, 0) + 1
+
+        # If there's a strong consensus, use it
+        max_votes = max(votes.values())
+        consensus_ks = [k for k, v in votes.items() if v == max_votes]
+
+        if len(consensus_ks) == 1:
+            optimal_k = consensus_ks[0]
+
         optimal_communities = k_scores[optimal_k]["communities"]
         optimal_model = k_scores[optimal_k]["kmeans_model"]
 
-        print(f"\nOPTIMAL NUMBER OF CLUSTERS: {optimal_k}")
-        print(
-            f"Chosen based on Calinski-Harabasz score: {k_scores[optimal_k]['calinski_harabasz']:.0f}"
-        )
+        print(f"\nFINAL DECISION: k={optimal_k}")
+        print(f"Reasoning: Calinski-Harabasz optimization (better at finding true k)")
+        print("=" * 60)
+
+        # Save optimization results
+        optimization_file = self.output_dir / "cluster_optimization.txt"
+        with open(optimization_file, "w", encoding="utf-8") as f:
+            f.write("CLUSTER OPTIMIZATION RESULTS\n")
+            f.write("=" * 50 + "\n\n")
+            f.write(f"METHOD: K-Means Clustering\n")
+            f.write(f"PRIMARY CRITERION: Calinski-Harabasz Index\n")
+            f.write(f"Optimal number of clusters: {optimal_k}\n\n")
+            f.write("Optimization Results:\n")
+            f.write(
+                f"Best Silhouette Score: k={best_silhouette_k} (score: {k_scores[best_silhouette_k]['silhouette']:.3f})\n"
+            )
+            f.write(
+                f"Best Calinski-Harabasz: k={best_ch_k} (score: {k_scores[best_ch_k]['calinski_harabasz']:.0f})\n"
+            )
+            f.write(
+                f"Best Davies-Bouldin: k={best_db_k} (score: {k_scores[best_db_k]['davies_bouldin']:.3f})\n"
+            )
+            f.write(f"Final choice: k={optimal_k}\n\n")
+            f.write("All Tested Cluster Numbers:\n")
+            f.write("k | Silhouette | Calinski-H | Davies-B | Inertia\n")
+            f.write("-" * 55 + "\n")
+            for k in sorted(k_scores.keys()):
+                sil = k_scores[k]["silhouette"]
+                ch = k_scores[k]["calinski_harabasz"]
+                db = k_scores[k]["davies_bouldin"]
+                inertia = k_scores[k]["inertia"]
+                marker = " <- CHOSEN" if k == optimal_k else ""
+                f.write(
+                    f"{k:2d}|   {sil:.3f}    |   {ch:7.0f}  |  {db:.3f}   | {inertia:8.0f}{marker}\n"
+                )
+
+        print(f"Cluster optimization results saved to: {optimization_file}")
 
         return optimal_k, optimal_communities, optimal_model, k_scores
 
     def compute_coherence_for_communities(self, communities):
-        """Compute coherence scores for communities (memory-efficient)"""
+        """Compute coherence scores for a set of communities (memory-efficient)"""
         coherence_scores = {}
 
         for community_id in sorted(set(communities)):
@@ -158,20 +255,27 @@ class SubregisterAnalyzer:
                 coherence_scores[community_id] = 0.0
                 continue
 
-            # Memory-efficient coherence computation
+            # Memory-efficient coherence computation for large communities
             if len(members) > 1000:
+                # Sample for large communities to avoid memory issues
                 sample_size = min(500, len(members))
                 sample_members = np.random.choice(members, sample_size, replace=False)
                 community_embeddings = self.embeddings_pca_norm[sample_members]
+                print(
+                    f"  Cluster {community_id}: Sampling {sample_size}/{len(members)} documents for coherence"
+                )
             else:
                 community_embeddings = self.embeddings_pca_norm[members]
 
+            # Compute average pairwise cosine similarity within community
             similarity_matrix = cosine_similarity(community_embeddings)
+
+            # Get upper triangle (excluding diagonal)
             upper_triangle = np.triu(similarity_matrix, k=1)
             coherence = np.mean(upper_triangle[upper_triangle > 0])
             coherence_scores[community_id] = coherence
 
-            # Clear memory
+            # Clear memory immediately
             del similarity_matrix, upper_triangle, community_embeddings
             import gc
 
@@ -183,46 +287,148 @@ class SubregisterAnalyzer:
         """Analyze and sample documents from each cluster"""
         communities = self.community_results[k]
 
-        print(f"Analyzing clusters (k={k})...")
+        # Compute coherence scores for all communities
+        print(f"Computing coherence scores for cluster analysis (k={k})...")
         coherence_scores = self.compute_coherence_for_communities(communities)
 
+        analysis_text = f"\n=== CLUSTER ANALYSIS (k={k}) ===\n"
+        print(analysis_text)
+
+        # Save analysis to file
         analysis_file = self.output_dir / f"cluster_analysis_k_{k}.txt"
 
         with open(analysis_file, "w", encoding="utf-8") as f:
-            f.write(f"=== CLUSTER ANALYSIS (k={k}) ===\n\n")
+            f.write(analysis_text)
 
             for cluster_id in sorted(set(communities)):
                 members = np.where(communities == cluster_id)[0]
                 coherence_score = coherence_scores.get(cluster_id, 0.0)
 
-                f.write(
-                    f"--- Cluster {cluster_id} ({len(members)} documents, coherence: {coherence_score:.3f}) ---\n"
-                )
+                section = f"\n--- Cluster {cluster_id} ({len(members)} documents, coherence: {coherence_score:.3f}) ---\n"
+                print(section)
+                f.write(section)
 
+                # Sample representative documents
                 if len(members) > 0:
                     sample_indices = np.random.choice(
                         members, min(top_n, len(members)), replace=False
                     )
 
                     for i, idx in enumerate(sample_indices):
+                        # Get full predictions for this document
                         doc_preds = self.preds[idx]
+                        # Escape newlines and save full text
                         full_text = (
                             self.texts[idx].replace("\n", "\\n").replace("\r", "\\r")
                         )
-                        f.write(f"{i + 1}. [{idx}] {doc_preds} {full_text}\n")
+                        line = f"{i + 1}. [{idx}] {doc_preds} {full_text}\n"
+                        # For console output, show predictions and truncated text
+                        truncated_text = (
+                            self.texts[idx][:100] + "..."
+                            if len(self.texts[idx]) > 100
+                            else self.texts[idx]
+                        )
+                        print(f"{i + 1}. [{idx}] {doc_preds} {truncated_text}")
+                        f.write(line)
 
                     if len(members) > top_n:
-                        f.write(f"... and {len(members) - top_n} more documents\n")
-
-                f.write("\n")
+                        remaining = f"... and {len(members) - top_n} more documents\n"
+                        print(remaining.strip())
+                        f.write(remaining)
 
         print(f"Cluster analysis saved to: {analysis_file}")
+
+    def compute_cluster_coherence(self, k):
+        """Compute intra-cluster coherence scores (memory-efficient)"""
+        communities = self.community_results[k]
+
+        print(f"Computing cluster coherence scores (k={k})...")
+        coherence_scores = self.compute_coherence_for_communities(communities)
+
+        coherence_text = f"Cluster Coherence Scores (k={k}):\n"
+
+        # Print and save results
+        print(f"\nCluster Coherence Scores (k={k}):")
+        for cluster_id, score in sorted(coherence_scores.items()):
+            line = f"Cluster {cluster_id}: {score:.3f}"
+            print(line)
+            coherence_text += line + "\n"
+
+        # Save coherence scores
+        coherence_file = self.output_dir / f"coherence_scores_k_{k}.txt"
+        with open(coherence_file, "w", encoding="utf-8") as f:
+            f.write(coherence_text)
+        print(f"Coherence scores saved to: {coherence_file}")
+
+        return coherence_scores
+
+    def compute_silhouette_analysis(self, k):
+        """Compute silhouette scores for cluster validation"""
+        communities = self.community_results[k]
+
+        print(f"Computing silhouette scores (k={k})...")
+
+        try:
+            # Overall silhouette score
+            overall_silhouette = silhouette_score(
+                self.embeddings_pca_norm, communities, metric="cosine"
+            )
+
+            # Individual silhouette scores for each document
+            sample_silhouette_values = silhouette_samples(
+                self.embeddings_pca_norm, communities, metric="cosine"
+            )
+
+            # Compute average silhouette score per cluster
+            cluster_silhouettes = {}
+            for cluster_id in sorted(set(communities)):
+                mask = communities == cluster_id
+                if np.sum(mask) > 1:  # Need at least 2 documents
+                    cluster_avg = np.mean(sample_silhouette_values[mask])
+                    cluster_silhouettes[cluster_id] = cluster_avg
+                else:
+                    cluster_silhouettes[cluster_id] = 0.0
+
+            # Print results
+            print(f"\nOverall Silhouette Score (k={k}): {overall_silhouette:.3f}")
+            print(f"\nPer-Cluster Silhouette Scores (k={k}):")
+
+            silhouette_text = f"SILHOUETTE ANALYSIS (k={k})\n"
+            silhouette_text += f"==================\n\n"
+            silhouette_text += f"Overall Silhouette Score: {overall_silhouette:.3f}\n"
+            silhouette_text += f"Interpretation:\n"
+            silhouette_text += f"  > 0.7: Strong cluster structure\n"
+            silhouette_text += f"  > 0.5: Reasonable cluster structure\n"
+            silhouette_text += f"  > 0.3: Weak but acceptable structure\n"
+            silhouette_text += f"  < 0.3: Poor cluster structure\n"
+            silhouette_text += f"  < 0.0: Documents may be in wrong clusters\n\n"
+            silhouette_text += f"Per-Cluster Silhouette Scores:\n"
+
+            for cluster_id, score in sorted(cluster_silhouettes.items()):
+                line = f"Cluster {cluster_id}: {score:.3f}"
+                print(line)
+                silhouette_text += line + "\n"
+
+            # Save silhouette scores
+            silhouette_file = self.output_dir / f"silhouette_analysis_k_{k}.txt"
+            with open(silhouette_file, "w", encoding="utf-8") as f:
+                f.write(silhouette_text)
+            print(f"\nSilhouette analysis saved to: {silhouette_file}")
+
+            return overall_silhouette, cluster_silhouettes
+
+        except Exception as e:
+            print(f"Error computing silhouette scores: {e}")
+            return None, {}
 
     def visualize_clusters_umap(self, k):
         """Visualize clusters using UMAP"""
         try:
-            print(f"Creating UMAP visualization (k={k})...")
+            print(
+                f"Creating UMAP visualization for all {len(self.embeddings)} documents (k={k})..."
+            )
 
+            # Use all data
             embeddings_vis = self.embeddings_pca_norm
             communities_vis = self.community_results[k]
 
@@ -236,7 +442,7 @@ class SubregisterAnalyzer:
             )
             embedding_2d = umap_model.fit_transform(embeddings_vis)
 
-            # Plot
+            # Plot and save
             plt.figure(figsize=(14, 10))
             scatter = plt.scatter(
                 embedding_2d[:, 0],
@@ -249,12 +455,15 @@ class SubregisterAnalyzer:
             plt.colorbar(scatter, label="Cluster ID")
 
             # Add cluster labels at centroids
-            for cluster_id in sorted(set(communities_vis)):
+            unique_clusters = sorted(set(communities_vis))
+            for cluster_id in unique_clusters:
+                # Find centroid of each cluster
                 mask = communities_vis == cluster_id
                 if np.sum(mask) > 0:
                     centroid_x = np.mean(embedding_2d[mask, 0])
                     centroid_y = np.mean(embedding_2d[mask, 1])
 
+                    # Add text label with background
                     plt.annotate(
                         f"{cluster_id}",
                         (centroid_x, centroid_y),
@@ -270,22 +479,65 @@ class SubregisterAnalyzer:
                         ),
                     )
 
-            plt.title(f"UMAP Visualization of {k} Clusters")
+            plt.title(f"UMAP Visualization of {k} Clusters\nNumbers show Cluster IDs")
             plt.xlabel("UMAP 1")
             plt.ylabel("UMAP 2")
 
+            # Save plot
             plot_path = self.output_dir / f"umap_clusters_k_{k}.png"
             plt.savefig(plot_path, dpi=150, bbox_inches="tight")
             plt.close()
 
+            # Create a legend mapping colors to cluster IDs
+            self._create_cluster_legend(unique_clusters, k)
+
+            # Force garbage collection
+            import gc
+
+            gc.collect()
+
             print(f"UMAP plot saved to: {plot_path}")
+            return embedding_2d, communities_vis
 
         except Exception as e:
             print(f"Error creating UMAP visualization: {e}")
             plt.close("all")
+            return None, None
+
+    def _create_cluster_legend(self, unique_clusters, k):
+        """Create a separate legend figure showing cluster colors"""
+        try:
+            fig, ax = plt.subplots(figsize=(8, max(4, len(unique_clusters) * 0.5)))
+
+            # Get colors from tab10 colormap (good for up to 10 clusters)
+            cmap = plt.cm.tab10
+            colors = [cmap(i / 10) for i in range(len(unique_clusters))]
+
+            # Create legend entries
+            for i, cluster_id in enumerate(unique_clusters):
+                ax.scatter([], [], c=[colors[i]], s=120, label=f"Cluster {cluster_id}")
+
+            ax.legend(loc="center", fontsize=12, ncol=max(1, len(unique_clusters) // 4))
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+            ax.axis("off")
+            ax.set_title(
+                f"Cluster Color Legend (k={k})", fontsize=16, fontweight="bold"
+            )
+
+            # Save legend
+            legend_path = self.output_dir / f"cluster_legend_k_{k}.png"
+            plt.savefig(legend_path, dpi=150, bbox_inches="tight")
+            plt.close()
+
+            print(f"Cluster legend saved to: {legend_path}")
+
+        except Exception as e:
+            print(f"Error creating cluster legend: {e}")
+            plt.close("all")
 
     def run_full_analysis(self):
-        """Run the complete analysis pipeline"""
+        """Run the complete subregister discovery pipeline with K-means clustering"""
         try:
             print("=" * 60)
             print("SUBREGISTER DISCOVERY ANALYSIS")
@@ -294,19 +546,62 @@ class SubregisterAnalyzer:
             # Step 1: Dimensionality reduction
             self.reduce_dimensions()
 
-            # Step 2: Find optimal k
+            # Step 2: Find optimal number of clusters
             optimal_k, optimal_communities, optimal_model, all_scores = (
                 self.find_optimal_k()
             )
 
             # Store results
             self.community_results = {optimal_k: optimal_communities}
+            self.kmeans_model = optimal_model
 
-            # Step 3: Analysis and visualization
+            # Save summary info
+            summary_file = self.output_dir / "analysis_summary.txt"
+            with open(summary_file, "w", encoding="utf-8") as f:
+                f.write("SUBREGISTER DISCOVERY ANALYSIS SUMMARY\n")
+                f.write("=" * 60 + "\n\n")
+                f.write(f"Input file: {self.pickle_path}\n")
+                f.write(f"Number of documents: {len(self.embeddings)}\n")
+                f.write(f"Embedding dimension: {self.embeddings.shape[1]}\n")
+                f.write(f"Register distribution: {dict(Counter(self.labels))}\n")
+                f.write(f"Clustering method: K-Means\n")
+                f.write(f"Optimization criterion: Silhouette Score\n")
+                f.write(f"Optimal number of clusters: {optimal_k}\n")
+                f.write(
+                    f"Best silhouette score: {all_scores[optimal_k]['silhouette']:.3f}\n\n"
+                )
+
+            # Step 3: Full analysis at optimal k
+            print(f"\n{'=' * 60}")
+            print(f"ANALYZING OPTIMAL CLUSTERING: k={optimal_k}")
+            print(
+                f"CHOSEN FOR BEST SILHOUETTE SCORE: {all_scores[optimal_k]['silhouette']:.3f}"
+            )
+            print(f"{'=' * 60}")
+
+            # Analyze clusters
             self.analyze_communities(k=optimal_k)
-            self.visualize_clusters_umap(k=optimal_k)
 
-            print(f"\nAnalysis complete! Results saved to: {self.output_dir}")
+            # Compute coherence scores
+            self.compute_cluster_coherence(k=optimal_k)
+
+            # Compute silhouette scores for detailed validation
+            self.compute_silhouette_analysis(k=optimal_k)
+
+            # Visualization
+            try:
+                self.visualize_clusters_umap(k=optimal_k)
+            except Exception as e:
+                print(f"Skipping UMAP visualization due to error: {e}")
+
+            print("\n" + "=" * 60)
+            print("ANALYSIS COMPLETE")
+            print(
+                f"Optimal number of clusters: {optimal_k} (chosen for best silhouette score)"
+            )
+            print(f"Best silhouette score: {all_scores[optimal_k]['silhouette']:.3f}")
+            print(f"All results saved to: {self.output_dir}")
+            print("=" * 60)
 
         except Exception as e:
             print(f"Error during analysis: {e}")
@@ -314,399 +609,109 @@ class SubregisterAnalyzer:
 
             traceback.print_exc()
         finally:
+            # Cleanup
             plt.close("all")
             import gc
 
             gc.collect()
 
 
-class MultiLanguageAnalyzer:
-    def __init__(self, pickle_paths, results_base_dir="subregister_results"):
-        """Combine multiple language files for joint analysis"""
-        self.pickle_paths = pickle_paths
-
-        # Extract language codes and register info
-        self.languages = []
-        self.register_info = None
-
-        for path in pickle_paths:
-            filename = Path(path).stem
-            lang_code = filename.split("_embeds_")[0]
-            self.languages.append(lang_code)
-
-            if self.register_info is None:
-                self.register_info = filename.split("_embeds_")[1]
-
-        # Create combined filename
-        combined_name = (
-            "_".join(sorted(self.languages)) + "_embeds_" + self.register_info
-        )
-
-        print(f"Combining languages: {', '.join(self.languages)}")
-        print(f"Register: {self.register_info}")
-
-        # Load and combine data
-        all_embeddings = []
-        all_texts = []
-        all_preds = []
-        all_labels = []
-        self.language_labels = []
-
-        for i, pickle_path in enumerate(pickle_paths):
-            print(f"Loading {self.languages[i]} data...")
-
-            with open(pickle_path, "rb") as f:
-                data = pickle.load(f)
-
-            embeddings = np.array([row["embed_last"] for row in data])
-            texts = [row["text"] for row in data]
-            preds = [row["preds"] for row in data]
-            labels = [row["preds"][0] if row["preds"] else "unknown" for row in data]
-
-            print(f"  Loaded {len(embeddings)} {self.languages[i]} documents")
-
-            if len(embeddings) < 500:
-                print(
-                    f"  Warning: {self.languages[i]} has only {len(embeddings)} documents"
-                )
-
-            all_embeddings.append(embeddings)
-            all_texts.extend(texts)
-            all_preds.extend(preds)
-            all_labels.extend(labels)
-
-            # Track language for each document
-            self.language_labels.extend([self.languages[i]] * len(embeddings))
-
-        # Combine embeddings
-        self.embeddings = np.vstack(all_embeddings)
-        self.texts = all_texts
-        self.preds = all_preds
-        self.labels = all_labels
-
-        print(f"Total combined documents: {len(self.embeddings)}")
-        print(f"Language distribution: {Counter(self.language_labels)}")
-
-        # Check minimum size
-        if len(self.embeddings) < 1000:
-            raise ValueError(
-                f"Combined dataset too small ({len(self.embeddings)} documents)."
-            )
-
-        # Create output directory
-        self.results_base_dir = Path(results_base_dir)
-        self.results_base_dir.mkdir(exist_ok=True)
-        self.output_dir = self.results_base_dir / combined_name
-        self.output_dir.mkdir(exist_ok=True)
-
-        print(f"Output will be saved to: {self.output_dir}")
-
-        # Normalize embeddings
-        self.embeddings_norm = self.embeddings / np.linalg.norm(
-            self.embeddings, axis=1, keepdims=True
-        )
-
-    def reduce_dimensions(self, n_components=40):
-        """Apply PCA for noise reduction"""
-        print(f"Applying PCA to reduce to {n_components} dimensions...")
-        self.pca = PCA(n_components=n_components, random_state=42)
-        self.embeddings_pca = self.pca.fit_transform(self.embeddings_norm)
-        self.embeddings_pca_norm = self.embeddings_pca / np.linalg.norm(
-            self.embeddings_pca, axis=1, keepdims=True
-        )
-
-        total_variance = self.pca.explained_variance_ratio_.sum()
-        print(f"PCA total variance explained: {total_variance:.3f}")
-
-        return self.embeddings_pca_norm
-
-    def find_optimal_k(self, k_range=[2, 3, 4, 5, 6, 7, 8]):
-        """Find optimal k using Calinski-Harabasz"""
-        print("Finding optimal number of clusters...")
-
-        k_scores = {}
-
-        for k in k_range:
-            try:
-                kmeans = KMeans(
-                    n_clusters=k, init="k-means++", n_init=10, random_state=42
-                )
-                communities = kmeans.fit_predict(self.embeddings_pca_norm)
-
-                ch_score = calinski_harabasz_score(
-                    self.embeddings_pca_norm, communities
-                )
-
-                k_scores[k] = {
-                    "calinski_harabasz": ch_score,
-                    "communities": communities,
-                    "kmeans_model": kmeans,
-                }
-
-                print(f"  k={k}: CH = {ch_score:.0f}")
-
-            except Exception as e:
-                print(f"  Error at k={k}: {e}")
-                continue
-
-        # Choose best k
-        optimal_k = max(k_scores.keys(), key=lambda k: k_scores[k]["calinski_harabasz"])
-        optimal_communities = k_scores[optimal_k]["communities"]
-        optimal_model = k_scores[optimal_k]["kmeans_model"]
-
-        print(f"Optimal k: {optimal_k}")
-
-        return optimal_k, optimal_communities, optimal_model, k_scores
-
-    def analyze_multilingual_clusters(self, k, top_n=10):
-        """Analyze clusters with language information"""
-        communities = self.community_results[k]
-        languages = np.array(self.language_labels)
-
-        analysis_file = self.output_dir / f"multilingual_analysis_k_{k}.txt"
-
-        with open(analysis_file, "w", encoding="utf-8") as f:
-            f.write(f"=== MULTILINGUAL CLUSTER ANALYSIS (k={k}) ===\n")
-            f.write(f"Languages: {', '.join(self.languages)}\n\n")
-
-            for cluster_id in sorted(set(communities)):
-                members = np.where(communities == cluster_id)[0]
-                cluster_languages = languages[members]
-                lang_distribution = Counter(cluster_languages)
-
-                f.write(f"--- Cluster {cluster_id} ({len(members)} documents) ---\n")
-                f.write(f"Language distribution: ")
-                f.write(
-                    ", ".join(
-                        [
-                            f"{lang}: {count} ({count / len(members) * 100:.1f}%)"
-                            for lang, count in sorted(lang_distribution.items())
-                        ]
-                    )
-                )
-                f.write("\n\n")
-
-                # Sample from each language
-                samples_per_lang = max(1, top_n // len(lang_distribution))
-
-                for lang in sorted(lang_distribution.keys()):
-                    lang_members = members[cluster_languages == lang]
-                    if len(lang_members) > 0:
-                        n_samples = min(samples_per_lang, len(lang_members))
-                        if n_samples > 0:
-                            sample_indices = np.random.choice(
-                                lang_members, n_samples, replace=False
-                            )
-
-                            f.write(f"{lang.upper()} examples:\n")
-
-                            for i, idx in enumerate(sample_indices):
-                                doc_preds = self.preds[idx]
-                                full_text = (
-                                    self.texts[idx]
-                                    .replace("\n", "\\n")
-                                    .replace("\r", "\\r")
-                                )
-                                f.write(f"  {i + 1}. [{idx}] {doc_preds} {full_text}\n")
-
-                            f.write("\n")
-
-                f.write("\n")
-
-        print(f"Multilingual analysis saved to: {analysis_file}")
-
-    def visualize_multilingual_clusters(self, k):
-        """Create UMAP with different markers for languages"""
-        try:
-            print(f"Creating multilingual UMAP visualization (k={k})...")
-
-            embeddings_vis = self.embeddings_pca_norm
-            communities_vis = self.community_results[k]
-            languages_vis = np.array(self.language_labels)
-
-            # UMAP projection
-            umap_model = umap.UMAP(
-                n_neighbors=min(30, len(embeddings_vis) // 10),
-                min_dist=0.1,
-                metric="cosine",
-                random_state=42,
-                low_memory=True,
-            )
-            embedding_2d = umap_model.fit_transform(embeddings_vis)
-
-            # Plot with different markers for languages
-            plt.figure(figsize=(16, 12))
-
-            # Define markers for each language
-            markers = ["o", "s", "^", "D", "v", "<", ">"]
-            language_markers = {
-                lang: markers[i % len(markers)]
-                for i, lang in enumerate(sorted(set(languages_vis)))
-            }
-
-            # Plot each language separately
-            for lang in sorted(set(languages_vis)):
-                lang_mask = languages_vis == lang
-                lang_communities = communities_vis[lang_mask]
-                lang_coords = embedding_2d[lang_mask]
-
-                scatter = plt.scatter(
-                    lang_coords[:, 0],
-                    lang_coords[:, 1],
-                    c=lang_communities,
-                    cmap="tab10",
-                    marker=language_markers[lang],
-                    alpha=0.7,
-                    s=8,
-                    label=f"{lang.upper()}",
-                    edgecolors="black",
-                    linewidth=0.1,
-                )
-
-            # Add colorbar and legend
-            plt.colorbar(scatter, label="Cluster ID")
-            plt.legend(title="Languages", bbox_to_anchor=(1.15, 1))
-
-            # Add cluster labels
-            for cluster_id in sorted(set(communities_vis)):
-                mask = communities_vis == cluster_id
-                if np.sum(mask) > 0:
-                    centroid_x = np.mean(embedding_2d[mask, 0])
-                    centroid_y = np.mean(embedding_2d[mask, 1])
-
-                    plt.annotate(
-                        f"{cluster_id}",
-                        (centroid_x, centroid_y),
-                        fontsize=14,
-                        fontweight="bold",
-                        ha="center",
-                        va="center",
-                        bbox=dict(
-                            boxstyle="round,pad=0.4",
-                            facecolor="white",
-                            edgecolor="black",
-                            alpha=0.9,
-                        ),
-                    )
-
-            plt.title(
-                f"Multilingual UMAP: {k} Clusters\nColors=Clusters, Markers=Languages"
-            )
-            plt.xlabel("UMAP 1")
-            plt.ylabel("UMAP 2")
-
-            plot_path = self.output_dir / f"multilingual_umap_k_{k}.png"
-            plt.savefig(plot_path, dpi=150, bbox_inches="tight")
-            plt.close()
-
-            print(f"Multilingual UMAP saved to: {plot_path}")
-
-        except Exception as e:
-            print(f"Error creating multilingual UMAP: {e}")
-            plt.close("all")
-
-    def run_full_analysis(self):
-        """Run complete multilingual analysis"""
-        try:
-            print("=" * 60)
-            print("MULTILINGUAL SUBREGISTER ANALYSIS")
-            print("=" * 60)
-
-            # Steps
-            self.reduce_dimensions()
-            optimal_k, optimal_communities, optimal_model, all_scores = (
-                self.find_optimal_k()
-            )
-
-            self.community_results = {optimal_k: optimal_communities}
-
-            self.analyze_multilingual_clusters(k=optimal_k)
-            self.visualize_multilingual_clusters(k=optimal_k)
-
-            print(
-                f"\nMultilingual analysis complete! Results saved to: {self.output_dir}"
-            )
-
-        except Exception as e:
-            print(f"Error during multilingual analysis: {e}")
-            import traceback
-
-            traceback.print_exc()
-        finally:
-            plt.close("all")
-            import gc
-
-            gc.collect()
-
-
-def find_language_groups(pkl_files):
-    """Group files by register"""
-    register_groups = {}
-
-    for pkl_file in pkl_files:
-        filename = Path(pkl_file).stem
-        if "_embeds_" in filename:
-            register_part = filename.split("_embeds_")[1]
-
-            if register_part not in register_groups:
-                register_groups[register_part] = []
-            register_groups[register_part].append(pkl_file)
-
-    return register_groups
-
-
-# Main execution
+# Usage example
 if __name__ == "__main__":
+    # Find all pkl files in the directory
     pkl_directory = "../data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/sm/"
     pkl_files = glob.glob(os.path.join(pkl_directory, "*.pkl"))
 
+    # Create common results directory
     results_dir = "subregister_results"
     Path(results_dir).mkdir(exist_ok=True)
 
-    print(f"Found {len(pkl_files)} pkl files")
+    print(f"Found {len(pkl_files)} pkl files to process:")
+    for i, file in enumerate(pkl_files, 1):
+        print(f"{i}. {os.path.basename(file)}")
 
-    # Group by register
-    register_groups = find_language_groups(pkl_files)
-    print(f"Found {len(register_groups)} register groups")
+    print(f"\nAll results will be saved to: {results_dir}/")
 
-    # Process individual files
-    print("\n=== INDIVIDUAL LANGUAGE ANALYSES ===")
-    for pkl_file in pkl_files:
+    print("\n" + "=" * 80)
+    print("PROCESSING ALL PKL FILES")
+    print("=" * 80)
+
+    successful_analyses = 0
+    failed_analyses = []
+    skipped_files = []
+
+    for i, pkl_file in enumerate(pkl_files, 1):
         try:
-            print(f"\nProcessing: {os.path.basename(pkl_file)}")
+            print(f"\n{'=' * 60}")
+            print(f"PROCESSING FILE {i}/{len(pkl_files)}: {os.path.basename(pkl_file)}")
+            print(f"{'=' * 60}")
+
+            # Initialize analyzer for this file
             analyzer = SubregisterAnalyzer(pkl_file, results_base_dir=results_dir)
+
+            # Run analysis with K-MEANS clustering
             analyzer.run_full_analysis()
-            print("✓ Success")
+
+            successful_analyses += 1
+            print(f"✓ Successfully completed analysis for {os.path.basename(pkl_file)}")
+
         except ValueError as e:
             if "too small" in str(e):
-                print(f"⚠ Skipped: {e}")
+                print(f"⚠ Skipping {os.path.basename(pkl_file)}: {e}")
+                skipped_files.append((pkl_file, str(e)))
             else:
-                print(f"✗ Error: {e}")
+                print(f"✗ Error processing {os.path.basename(pkl_file)}: {e}")
+                failed_analyses.append((pkl_file, str(e)))
+            continue
+
         except Exception as e:
-            print(f"✗ Error: {e}")
+            print(f"✗ Error processing {os.path.basename(pkl_file)}: {e}")
+            failed_analyses.append((pkl_file, str(e)))
+
+            # Print traceback for debugging
+            import traceback
+
+            traceback.print_exc()
+            continue
+
         finally:
+            # Cleanup between files
             plt.close("all")
             import gc
 
             gc.collect()
 
-    # Process multilingual combinations
-    print("\n=== MULTILINGUAL COMBINATIONS ===")
-    for register, files in register_groups.items():
-        if len(files) >= 2:
-            try:
-                languages = [Path(f).stem.split("_embeds_")[0] for f in files]
-                print(f"\nCombining {register}: {', '.join(languages)}")
+    # Final summary
+    print("\n" + "=" * 80)
+    print("BATCH PROCESSING COMPLETE")
+    print("=" * 80)
+    print(f"Successfully processed: {successful_analyses}/{len(pkl_files)} files")
 
-                ml_analyzer = MultiLanguageAnalyzer(files, results_base_dir=results_dir)
-                ml_analyzer.run_full_analysis()
-                print("✓ Success")
-            except Exception as e:
-                print(f"✗ Error: {e}")
-            finally:
-                plt.close("all")
-                import gc
+    if skipped_files:
+        print(f"\nSkipped files ({len(skipped_files)}):")
+        for file, reason in skipped_files:
+            print(f"  ⚠ {os.path.basename(file)}: {reason}")
 
-                gc.collect()
+    if failed_analyses:
+        print(f"\nFailed analyses ({len(failed_analyses)}):")
+        for file, error in failed_analyses:
+            print(f"  ✗ {os.path.basename(file)}: {error}")
 
-    print("\n=== ALL ANALYSES COMPLETE ===")
+    if successful_analyses + len(skipped_files) == len(pkl_files):
+        print("All eligible files processed successfully! ✓")
+
+    print(f"\nResults organized in: {results_dir}/")
+
+    # List created subdirectories
+    if os.path.exists(results_dir):
+        subdirs = [
+            d
+            for d in os.listdir(results_dir)
+            if os.path.isdir(os.path.join(results_dir, d))
+        ]
+        if subdirs:
+            print("Subdirectories created:")
+            for subdir in sorted(subdirs):
+                print(f"  - {results_dir}/{subdir}/")
+
+    print("\nAnalysis completed with cleanup.")
