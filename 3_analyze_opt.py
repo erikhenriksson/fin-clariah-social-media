@@ -154,74 +154,130 @@ class SubregisterAnalyzer:
 
         return communities
 
-    def find_optimal_resolution(
-        self, resolutions=[0.3, 0.5, 0.7, 1.0, 1.3, 1.5, 1.7, 2.0]
+    def find_resolution_for_target_clusters(
+        self, target_clusters, resolution_range=(0.1, 3.0), max_attempts=20
     ):
-        """Find optimal resolution based on silhouette scores"""
-        print("=" * 60)
-        print("FINDING OPTIMAL RESOLUTION BASED ON SILHOUETTE SCORES")
-        print("=" * 60)
+        """Find resolution that produces approximately the target number of clusters"""
+        print(f"  Searching for resolution to get ~{target_clusters} clusters...")
 
-        resolution_scores = {}
+        low_res, high_res = resolution_range
+        best_resolution = None
+        best_diff = float("inf")
 
-        for resolution in resolutions:
-            print(f"\nTesting resolution {resolution}...")
+        for attempt in range(max_attempts):
+            # Binary search approach
+            test_resolution = (low_res + high_res) / 2
+
             try:
-                # Detect communities at this resolution
-                communities = self.detect_communities_leiden(resolution=resolution)
-
-                # Skip if too few or too many communities
+                communities = self.detect_communities_leiden(resolution=test_resolution)
                 n_communities = len(set(communities))
-                if n_communities < 2:
-                    print(f"  Skipping: Only {n_communities} community found")
-                    continue
-                if (
-                    n_communities > len(self.embeddings) // 5
-                ):  # Avoid too many tiny communities
-                    print(f"  Skipping: Too many communities ({n_communities})")
-                    continue
+                diff = abs(n_communities - target_clusters)
 
-                # Compute silhouette score
+                if diff < best_diff:
+                    best_diff = diff
+                    best_resolution = test_resolution
+                    best_communities = communities
+
+                # Adjust search range
+                if n_communities < target_clusters:
+                    high_res = test_resolution  # Need higher resolution
+                else:
+                    low_res = test_resolution  # Need lower resolution
+
+                # Stop if we hit the target exactly or very close
+                if diff <= 1:
+                    break
+
+            except Exception as e:
+                print(f"    Error at resolution {test_resolution:.3f}: {e}")
+                break
+
+        if best_resolution is not None:
+            print(
+                f"    Found resolution {best_resolution:.3f} → {len(set(best_communities))} clusters"
+            )
+            return best_resolution, best_communities
+        else:
+            print(f"    Failed to find resolution for {target_clusters} clusters")
+            return None, None
+
+    def find_optimal_resolution(self, target_cluster_range=[2, 3, 4, 5, 6, 7, 8]):
+        """Find optimal resolution based on silhouette scores for target cluster counts"""
+        print("=" * 60)
+        print("FINDING OPTIMAL RESOLUTION FOR TARGET CLUSTER COUNTS")
+        print("=" * 60)
+
+        cluster_results = {}
+
+        for target_clusters in target_cluster_range:
+            print(f"\nTesting {target_clusters} clusters...")
+
+            # Find resolution that produces approximately target clusters
+            resolution, communities = self.find_resolution_for_target_clusters(
+                target_clusters
+            )
+
+            if resolution is None or communities is None:
                 print(
-                    f"  Computing silhouette score for {n_communities} communities..."
+                    f"  Skipping: Could not find resolution for {target_clusters} clusters"
                 )
+                continue
+
+            n_communities = len(set(communities))
+
+            # Skip if we're way off target
+            if abs(n_communities - target_clusters) > 2:
+                print(
+                    f"  Skipping: Got {n_communities} clusters, wanted {target_clusters}"
+                )
+                continue
+
+            try:
+                # Compute silhouette score
+                print(f"  Computing silhouette score for {n_communities} clusters...")
                 silhouette = silhouette_score(
                     self.embeddings_pca_norm, communities, metric="cosine"
                 )
 
-                resolution_scores[resolution] = {
+                cluster_results[target_clusters] = {
+                    "resolution": resolution,
+                    "actual_clusters": n_communities,
                     "silhouette": silhouette,
-                    "n_communities": n_communities,
                     "communities": communities,
                 }
 
                 print(
-                    f"  Resolution {resolution}: SILHOUETTE = {silhouette:.3f}, {n_communities} communities"
+                    f"  {target_clusters} clusters: resolution={resolution:.3f}, silhouette={silhouette:.3f}"
                 )
 
             except Exception as e:
-                print(f"  Error at resolution {resolution}: {e}")
+                print(
+                    f"  Error computing silhouette for {target_clusters} clusters: {e}"
+                )
                 continue
 
-        if not resolution_scores:
+        if not cluster_results:
             raise ValueError(
-                "No valid resolution found. Dataset may be too difficult to cluster."
+                "No valid cluster counts found. Dataset may be too difficult to cluster."
             )
 
-        # Find optimal resolution based on SILHOUETTE SCORE
-        optimal_resolution = max(
-            resolution_scores.keys(), key=lambda r: resolution_scores[r]["silhouette"]
+        # Find optimal based on silhouette score
+        optimal_target = max(
+            cluster_results.keys(), key=lambda k: cluster_results[k]["silhouette"]
         )
-        optimal_silhouette = resolution_scores[optimal_resolution]["silhouette"]
-        optimal_communities = resolution_scores[optimal_resolution]["communities"]
+
+        optimal_result = cluster_results[optimal_target]
+        optimal_resolution = optimal_result["resolution"]
+        optimal_silhouette = optimal_result["silhouette"]
+        optimal_communities = optimal_result["communities"]
+        actual_clusters = optimal_result["actual_clusters"]
 
         print(f"\n" + "=" * 60)
-        print(f"OPTIMAL RESOLUTION FOUND: {optimal_resolution}")
-        print(f"OPTIMIZATION CRITERION: Silhouette Score")
+        print(f"OPTIMAL CLUSTERING FOUND")
+        print(f"Target Clusters: {optimal_target}")
+        print(f"Actual Clusters: {actual_clusters}")
+        print(f"Resolution: {optimal_resolution:.3f}")
         print(f"Best Silhouette Score: {optimal_silhouette:.3f}")
-        print(
-            f"Number of Communities: {resolution_scores[optimal_resolution]['n_communities']}"
-        )
         print("=" * 60)
 
         # Save optimization results
@@ -229,28 +285,24 @@ class SubregisterAnalyzer:
         with open(optimization_file, "w", encoding="utf-8") as f:
             f.write("RESOLUTION OPTIMIZATION RESULTS\n")
             f.write("=" * 50 + "\n\n")
-            f.write(f"OPTIMIZATION CRITERION: Silhouette Score\n")
-            f.write(f"Optimal Resolution: {optimal_resolution}\n")
-            f.write(f"Best Silhouette Score: {optimal_silhouette:.3f}\n")
-            f.write(
-                f"Number of Communities: {resolution_scores[optimal_resolution]['n_communities']}\n\n"
-            )
-            f.write("All Tested Resolutions:\n")
-            f.write("Resolution | Silhouette | Communities\n")
-            f.write("-" * 40 + "\n")
-            for res in sorted(resolution_scores.keys()):
-                sil = resolution_scores[res]["silhouette"]
-                n_comm = resolution_scores[res]["n_communities"]
-                marker = (
-                    " <- OPTIMAL (Best Silhouette)" if res == optimal_resolution else ""
-                )
+            f.write(f"OPTIMIZATION METHOD: Target Cluster Count with Silhouette\n")
+            f.write(f"Optimal Target: {optimal_target} clusters\n")
+            f.write(f"Actual Clusters: {actual_clusters}\n")
+            f.write(f"Optimal Resolution: {optimal_resolution:.3f}\n")
+            f.write(f"Best Silhouette Score: {optimal_silhouette:.3f}\n\n")
+            f.write("All Tested Cluster Counts:\n")
+            f.write("Target | Actual | Resolution | Silhouette\n")
+            f.write("-" * 45 + "\n")
+            for target in sorted(cluster_results.keys()):
+                result = cluster_results[target]
+                marker = " <- OPTIMAL" if target == optimal_target else ""
                 f.write(
-                    f"    {res:4.1f}  |   {sil:.3f}    |     {n_comm:3d}    {marker}\n"
+                    f"  {target:2d}   |   {result['actual_clusters']:2d}   |   {result['resolution']:6.3f}   |   {result['silhouette']:6.3f}   {marker}\n"
                 )
 
         print(f"Resolution optimization results saved to: {optimization_file}")
 
-        return optimal_resolution, optimal_communities, resolution_scores
+        return optimal_resolution, optimal_communities, cluster_results
 
     def compute_coherence_for_communities(self, communities):
         """Compute coherence scores for a set of communities (memory-efficient)"""
@@ -585,20 +637,23 @@ class SubregisterAnalyzer:
                 f.write(f"Embedding dimension: {self.embeddings.shape[1]}\n")
                 f.write(f"Register distribution: {dict(Counter(self.labels))}\n")
                 f.write(f"k-NN parameter: auto-computed\n")
-                f.write(f"Optimization criterion: Silhouette Score\n")
-                f.write(f"Optimal resolution: {optimal_resolution}\n")
+                f.write(f"Optimization method: Target Cluster Count (2-10)\n")
                 f.write(
-                    f"Best silhouette score: {all_scores[optimal_resolution]['silhouette']:.3f}\n"
+                    f"Optimal target clusters: {all_scores[list(all_scores.keys())[0]]['actual_clusters']}\n"
+                )
+                f.write(f"Optimal resolution: {optimal_resolution:.3f}\n")
+                f.write(
+                    f"Best silhouette score: {all_scores[list(all_scores.keys())[0]]['silhouette']:.3f}\n"
                 )
                 f.write(
-                    f"Number of communities: {all_scores[optimal_resolution]['n_communities']}\n\n"
+                    f"Number of communities: {all_scores[list(all_scores.keys())[0]]['actual_clusters']}\n\n"
                 )
 
             # Step 4: Full analysis at optimal resolution
             print(f"\n{'=' * 60}")
             print(f"ANALYZING OPTIMAL RESOLUTION: {optimal_resolution}")
             print(
-                f"CHOSEN FOR BEST SILHOUETTE SCORE: {all_scores[optimal_resolution]['silhouette']:.3f}"
+                f"CHOSEN FOR BEST SILHOUETTE WITH {all_scores[list(all_scores.keys())[0]]['actual_clusters']} CLUSTERS"
             )
             print(f"{'=' * 60}")
 
@@ -620,10 +675,13 @@ class SubregisterAnalyzer:
             print("\n" + "=" * 60)
             print("ANALYSIS COMPLETE")
             print(
-                f"Optimal resolution: {optimal_resolution} (chosen for best silhouette score)"
+                f"Optimal resolution: {optimal_resolution:.3f} (for best silhouette with controlled cluster count)"
             )
             print(
-                f"Best silhouette score: {all_scores[optimal_resolution]['silhouette']:.3f}"
+                f"Best silhouette score: {all_scores[list(all_scores.keys())[0]]['silhouette']:.3f}"
+            )
+            print(
+                f"Number of clusters: {all_scores[list(all_scores.keys())[0]]['actual_clusters']}"
             )
             print(f"All results saved to: {self.output_dir}")
             print("=" * 60)
