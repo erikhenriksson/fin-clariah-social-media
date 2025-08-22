@@ -79,7 +79,7 @@ class SubregisterAnalyzer:
         return self.embeddings_pca_norm
 
     def find_optimal_k(self, k_range=[2, 3, 4, 5, 6, 7, 8]):
-        """Find optimal number of clusters using K-means and silhouette scores"""
+        """Find optimal number of clusters using multiple criteria"""
         print("=" * 60)
         print("FINDING OPTIMAL NUMBER OF CLUSTERS (K-MEANS)")
         print("=" * 60)
@@ -100,7 +100,6 @@ class SubregisterAnalyzer:
                 communities = kmeans.fit_predict(self.embeddings_pca_norm)
 
                 # Compute silhouette score
-                print(f"  Computing silhouette score for {k} clusters...")
                 silhouette = silhouette_score(
                     self.embeddings_pca_norm, communities, metric="cosine"
                 )
@@ -108,15 +107,29 @@ class SubregisterAnalyzer:
                 # Compute inertia (within-cluster sum of squares)
                 inertia = kmeans.inertia_
 
+                # Compute Calinski-Harabasz Index (higher is better)
+                from sklearn.metrics import calinski_harabasz_score
+
+                ch_score = calinski_harabasz_score(
+                    self.embeddings_pca_norm, communities
+                )
+
+                # Compute Davies-Bouldin Index (lower is better)
+                from sklearn.metrics import davies_bouldin_score
+
+                db_score = davies_bouldin_score(self.embeddings_pca_norm, communities)
+
                 k_scores[k] = {
                     "silhouette": silhouette,
                     "inertia": inertia,
+                    "calinski_harabasz": ch_score,
+                    "davies_bouldin": db_score,
                     "communities": communities,
                     "kmeans_model": kmeans,
                 }
 
                 print(
-                    f"  k={k}: SILHOUETTE = {silhouette:.3f}, inertia = {inertia:.0f}"
+                    f"  k={k}: Silhouette = {silhouette:.3f}, CH = {ch_score:.0f}, DB = {db_score:.3f}"
                 )
 
             except Exception as e:
@@ -128,16 +141,71 @@ class SubregisterAnalyzer:
                 "No valid k found. Dataset may be too difficult to cluster."
             )
 
-        # Find optimal k based on SILHOUETTE SCORE
-        optimal_k = max(k_scores.keys(), key=lambda k: k_scores[k]["silhouette"])
-        optimal_silhouette = k_scores[optimal_k]["silhouette"]
+        # Multiple optimization criteria
+        print(f"\n" + "=" * 60)
+        print("OPTIMIZATION RESULTS:")
+        print("=" * 60)
+
+        # 1. Best silhouette score
+        best_silhouette_k = max(
+            k_scores.keys(), key=lambda k: k_scores[k]["silhouette"]
+        )
+        print(
+            f"Best Silhouette Score: k={best_silhouette_k} (score: {k_scores[best_silhouette_k]['silhouette']:.3f})"
+        )
+
+        # 2. Best Calinski-Harabasz score (often finds more realistic k)
+        best_ch_k = max(k_scores.keys(), key=lambda k: k_scores[k]["calinski_harabasz"])
+        print(
+            f"Best Calinski-Harabasz: k={best_ch_k} (score: {k_scores[best_ch_k]['calinski_harabasz']:.0f})"
+        )
+
+        # 3. Best Davies-Bouldin score (lower is better)
+        best_db_k = min(k_scores.keys(), key=lambda k: k_scores[k]["davies_bouldin"])
+        print(
+            f"Best Davies-Bouldin: k={best_db_k} (score: {k_scores[best_db_k]['davies_bouldin']:.3f})"
+        )
+
+        # 4. Elbow method (biggest drop in inertia)
+        inertias = [k_scores[k]["inertia"] for k in sorted(k_scores.keys())]
+        k_values = sorted(k_scores.keys())
+
+        # Calculate elbow score (second derivative of inertia curve)
+        if len(k_values) >= 3:
+            elbow_scores = {}
+            for i in range(1, len(k_values) - 1):
+                k_curr = k_values[i]
+                # Calculate rate of change in inertia decrease
+                prev_drop = inertias[i - 1] - inertias[i]
+                next_drop = inertias[i] - inertias[i + 1]
+                elbow_scores[k_curr] = prev_drop - next_drop  # Higher = bigger elbow
+
+            if elbow_scores:
+                best_elbow_k = max(elbow_scores.keys(), key=lambda k: elbow_scores[k])
+                print(f"Elbow Method suggests: k={best_elbow_k}")
+
+        # HYBRID DECISION: Prefer Calinski-Harabasz over Silhouette (tends to find better k)
+        # But validate with other metrics
+        optimal_k = best_ch_k
+
+        # Override if consensus points to different k
+        votes = {}
+        votes[best_silhouette_k] = votes.get(best_silhouette_k, 0) + 1
+        votes[best_ch_k] = votes.get(best_ch_k, 0) + 2  # Weight CH more heavily
+        votes[best_db_k] = votes.get(best_db_k, 0) + 1
+
+        # If there's a strong consensus, use it
+        max_votes = max(votes.values())
+        consensus_ks = [k for k, v in votes.items() if v == max_votes]
+
+        if len(consensus_ks) == 1:
+            optimal_k = consensus_ks[0]
+
         optimal_communities = k_scores[optimal_k]["communities"]
         optimal_model = k_scores[optimal_k]["kmeans_model"]
 
-        print(f"\n" + "=" * 60)
-        print(f"OPTIMAL NUMBER OF CLUSTERS: {optimal_k}")
-        print(f"OPTIMIZATION CRITERION: Silhouette Score")
-        print(f"Best Silhouette Score: {optimal_silhouette:.3f}")
+        print(f"\nFINAL DECISION: k={optimal_k}")
+        print(f"Reasoning: Calinski-Harabasz optimization (better at finding true k)")
         print("=" * 60)
 
         # Save optimization results
@@ -146,17 +214,31 @@ class SubregisterAnalyzer:
             f.write("CLUSTER OPTIMIZATION RESULTS\n")
             f.write("=" * 50 + "\n\n")
             f.write(f"METHOD: K-Means Clustering\n")
-            f.write(f"OPTIMIZATION CRITERION: Silhouette Score\n")
-            f.write(f"Optimal number of clusters: {optimal_k}\n")
-            f.write(f"Best Silhouette Score: {optimal_silhouette:.3f}\n\n")
+            f.write(f"PRIMARY CRITERION: Calinski-Harabasz Index\n")
+            f.write(f"Optimal number of clusters: {optimal_k}\n\n")
+            f.write("Optimization Results:\n")
+            f.write(
+                f"Best Silhouette Score: k={best_silhouette_k} (score: {k_scores[best_silhouette_k]['silhouette']:.3f})\n"
+            )
+            f.write(
+                f"Best Calinski-Harabasz: k={best_ch_k} (score: {k_scores[best_ch_k]['calinski_harabasz']:.0f})\n"
+            )
+            f.write(
+                f"Best Davies-Bouldin: k={best_db_k} (score: {k_scores[best_db_k]['davies_bouldin']:.3f})\n"
+            )
+            f.write(f"Final choice: k={optimal_k}\n\n")
             f.write("All Tested Cluster Numbers:\n")
-            f.write("Clusters | Silhouette | Inertia\n")
-            f.write("-" * 35 + "\n")
+            f.write("k | Silhouette | Calinski-H | Davies-B | Inertia\n")
+            f.write("-" * 55 + "\n")
             for k in sorted(k_scores.keys()):
                 sil = k_scores[k]["silhouette"]
+                ch = k_scores[k]["calinski_harabasz"]
+                db = k_scores[k]["davies_bouldin"]
                 inertia = k_scores[k]["inertia"]
-                marker = " <- OPTIMAL" if k == optimal_k else ""
-                f.write(f"   {k:2d}    |   {sil:.3f}    | {inertia:8.0f}{marker}\n")
+                marker = " <- CHOSEN" if k == optimal_k else ""
+                f.write(
+                    f"{k:2d}|   {sil:.3f}    |   {ch:7.0f}  |  {db:.3f}   | {inertia:8.0f}{marker}\n"
+                )
 
         print(f"Cluster optimization results saved to: {optimization_file}")
 
