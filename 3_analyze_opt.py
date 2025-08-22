@@ -5,13 +5,16 @@ import warnings
 from collections import Counter
 from pathlib import Path
 
+import igraph as ig
+import leidenalg as la
 import matplotlib.pyplot as plt
+import networkx as nx
 import numpy as np
 import umap
-from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_samples, silhouette_score
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.neighbors import NearestNeighbors
 
 warnings.filterwarnings("ignore")
 
@@ -78,177 +81,200 @@ class SubregisterAnalyzer:
 
         return self.embeddings_pca_norm
 
-    def find_optimal_k(self, k_range=[2, 3, 4, 5, 6, 7, 8]):
-        """Find optimal number of clusters using multiple criteria"""
+    def build_knn_graph(self, k=None):
+        """Build k-nearest neighbor graph"""
+        # Auto-compute k based on dataset size if not provided
+        if k is None:
+            # Use a more conservative formula for large datasets
+            if len(self.embeddings) < 5000:
+                k = int(np.sqrt(len(self.embeddings)))
+            else:
+                # For large datasets, use log-based scaling
+                k = int(10 * np.log10(len(self.embeddings)))
+
+            k = max(15, min(k, 50))  # Clamp between 15 and 50
+
+        print(f"Building {k}-NN graph for {len(self.embeddings)} documents...")
+
+        # Find k-nearest neighbors
+        nbrs = NearestNeighbors(n_neighbors=k + 1, metric="cosine", n_jobs=-1)
+        nbrs.fit(self.embeddings_pca_norm)
+        distances, indices = nbrs.kneighbors(self.embeddings_pca_norm)
+
+        # Build graph (excluding self-connections)
+        self.graph = nx.Graph()
+
+        for i in range(len(self.embeddings)):
+            for j in range(1, k + 1):  # Skip self (index 0)
+                neighbor = indices[i][j]
+                similarity = 1 - distances[i][j]  # Convert distance to similarity
+                self.graph.add_edge(i, neighbor, weight=similarity)
+
+        print(
+            f"Graph created with {self.graph.number_of_nodes()} nodes and {self.graph.number_of_edges()} edges"
+        )
+        return self.graph
+
+    def detect_communities_leiden(self, resolution=1.0):
+        """Detect communities using Leiden algorithm"""
+        # Convert NetworkX graph to igraph format
+        edge_list = list(self.graph.edges(data=True))
+
+        # Create igraph from edge list
+        g = ig.Graph()
+        g.add_vertices(self.graph.number_of_nodes())
+
+        # Add edges with weights
+        edges = [(u, v) for u, v, _ in edge_list]
+        weights = [d["weight"] for u, v, d in edge_list]
+
+        g.add_edges(edges)
+        g.es["weight"] = weights
+
+        # Run Leiden algorithm
+        partition = la.find_partition(
+            g,
+            la.RBConfigurationVertexPartition,
+            resolution_parameter=resolution,
+            seed=42,
+        )
+
+        # Convert partition to array format
+        communities = np.array(partition.membership)
+
+        n_communities = len(set(communities))
+        return communities, n_communities
+
+    def find_resolutions_for_target_clusters(self, target_clusters=[2, 3, 4, 5, 6]):
+        """Find Leiden resolutions that produce exactly the target number of clusters"""
         print("=" * 60)
-        print("FINDING OPTIMAL NUMBER OF CLUSTERS (K-MEANS)")
+        print("FINDING RESOLUTIONS FOR TARGET CLUSTER COUNTS")
         print("=" * 60)
 
-        k_scores = {}
+        resolution_mapping = {}
 
-        for k in k_range:
-            print(f"\nTesting k={k} clusters...")
-            try:
-                # Run K-means clustering
-                kmeans = KMeans(
-                    n_clusters=k,
-                    init="k-means++",
-                    n_init=10,
-                    max_iter=300,
-                    random_state=42,
+        for target_k in target_clusters:
+            print(f"\nFinding resolution for {target_k} clusters...")
+
+            # Binary search for resolution that gives target_k clusters
+            resolution_low = 0.01
+            resolution_high = 5.0
+            best_resolution = None
+            max_iterations = 20
+
+            for iteration in range(max_iterations):
+                resolution_mid = (resolution_low + resolution_high) / 2
+
+                communities, n_communities = self.detect_communities_leiden(
+                    resolution=resolution_mid
                 )
-                communities = kmeans.fit_predict(self.embeddings_pca_norm)
 
-                # Compute silhouette score
+                print(
+                    f"  Iteration {iteration + 1}: resolution={resolution_mid:.3f} -> {n_communities} clusters"
+                )
+
+                if n_communities == target_k:
+                    best_resolution = resolution_mid
+                    break
+                elif n_communities < target_k:
+                    resolution_high = resolution_mid
+                elif n_communities > target_k:
+                    resolution_low = resolution_mid
+
+                # Stop if range is too narrow
+                if abs(resolution_high - resolution_low) < 0.001:
+                    # Choose the resolution that got closest to target
+                    best_resolution = resolution_mid
+                    break
+
+            if best_resolution is not None:
+                # Get final communities with best resolution
+                communities, n_communities = self.detect_communities_leiden(
+                    resolution=best_resolution
+                )
+
+                # Compute silhouette score for this clustering
                 silhouette = silhouette_score(
                     self.embeddings_pca_norm, communities, metric="cosine"
                 )
 
-                # Compute inertia (within-cluster sum of squares)
-                inertia = kmeans.inertia_
-
-                # Compute Calinski-Harabasz Index (higher is better)
-                from sklearn.metrics import calinski_harabasz_score
-
-                ch_score = calinski_harabasz_score(
-                    self.embeddings_pca_norm, communities
-                )
-
-                # Compute Davies-Bouldin Index (lower is better)
-                from sklearn.metrics import davies_bouldin_score
-
-                db_score = davies_bouldin_score(self.embeddings_pca_norm, communities)
-
-                k_scores[k] = {
-                    "silhouette": silhouette,
-                    "inertia": inertia,
-                    "calinski_harabasz": ch_score,
-                    "davies_bouldin": db_score,
+                resolution_mapping[target_k] = {
+                    "resolution": best_resolution,
                     "communities": communities,
-                    "kmeans_model": kmeans,
+                    "n_communities": n_communities,
+                    "silhouette": silhouette,
                 }
 
                 print(
-                    f"  k={k}: Silhouette = {silhouette:.3f}, CH = {ch_score:.0f}, DB = {db_score:.3f}"
+                    f"  ✓ Found: resolution={best_resolution:.3f} gives {n_communities} clusters (silhouette={silhouette:.3f})"
                 )
+            else:
+                print(f"  ✗ Could not find resolution for {target_k} clusters")
 
-            except Exception as e:
-                print(f"  Error at k={k}: {e}")
-                continue
+        return resolution_mapping
 
-        if not k_scores:
-            raise ValueError(
-                "No valid k found. Dataset may be too difficult to cluster."
+    def select_best_clustering(self, resolution_mapping):
+        """Select the best clustering based on silhouette scores"""
+        print("\n" + "=" * 60)
+        print("SELECTING BEST CLUSTERING")
+        print("=" * 60)
+
+        print("\nCluster Count | Resolution | Silhouette Score")
+        print("-" * 45)
+
+        best_k = None
+        best_silhouette = -1
+
+        for k in sorted(resolution_mapping.keys()):
+            result = resolution_mapping[k]
+            resolution = result["resolution"]
+            silhouette = result["silhouette"]
+
+            marker = ""
+            if silhouette > best_silhouette:
+                best_silhouette = silhouette
+                best_k = k
+                marker = " <- BEST"
+
+            print(
+                f"     {k:2d}       |   {resolution:.3f}    |     {silhouette:.3f}    {marker}"
             )
 
-        # Multiple optimization criteria
-        print(f"\n" + "=" * 60)
-        print("OPTIMIZATION RESULTS:")
-        print("=" * 60)
+        optimal_result = resolution_mapping[best_k]
 
-        # 1. Best silhouette score
-        best_silhouette_k = max(
-            k_scores.keys(), key=lambda k: k_scores[k]["silhouette"]
-        )
-        print(
-            f"Best Silhouette Score: k={best_silhouette_k} (score: {k_scores[best_silhouette_k]['silhouette']:.3f})"
-        )
-
-        # 2. Best Calinski-Harabasz score (often finds more realistic k)
-        best_ch_k = max(k_scores.keys(), key=lambda k: k_scores[k]["calinski_harabasz"])
-        print(
-            f"Best Calinski-Harabasz: k={best_ch_k} (score: {k_scores[best_ch_k]['calinski_harabasz']:.0f})"
-        )
-
-        # 3. Best Davies-Bouldin score (lower is better)
-        best_db_k = min(k_scores.keys(), key=lambda k: k_scores[k]["davies_bouldin"])
-        print(
-            f"Best Davies-Bouldin: k={best_db_k} (score: {k_scores[best_db_k]['davies_bouldin']:.3f})"
-        )
-
-        # 4. Elbow method (biggest drop in inertia)
-        inertias = [k_scores[k]["inertia"] for k in sorted(k_scores.keys())]
-        k_values = sorted(k_scores.keys())
-
-        # Calculate elbow score (second derivative of inertia curve)
-        if len(k_values) >= 3:
-            elbow_scores = {}
-            for i in range(1, len(k_values) - 1):
-                k_curr = k_values[i]
-                # Calculate rate of change in inertia decrease
-                prev_drop = inertias[i - 1] - inertias[i]
-                next_drop = inertias[i] - inertias[i + 1]
-                elbow_scores[k_curr] = prev_drop - next_drop  # Higher = bigger elbow
-
-            if elbow_scores:
-                best_elbow_k = max(elbow_scores.keys(), key=lambda k: elbow_scores[k])
-                print(f"Elbow Method suggests: k={best_elbow_k}")
-
-        # HYBRID DECISION: Prefer Calinski-Harabasz over Silhouette (tends to find better k)
-        # But validate with other metrics
-        optimal_k = best_ch_k
-
-        # Override if consensus points to different k
-        votes = {}
-        votes[best_silhouette_k] = votes.get(best_silhouette_k, 0) + 1
-        votes[best_ch_k] = votes.get(best_ch_k, 0) + 2  # Weight CH more heavily
-        votes[best_db_k] = votes.get(best_db_k, 0) + 1
-
-        # If there's a strong consensus, use it
-        max_votes = max(votes.values())
-        consensus_ks = [k for k, v in votes.items() if v == max_votes]
-
-        if len(consensus_ks) == 1:
-            optimal_k = consensus_ks[0]
-
-        optimal_communities = k_scores[optimal_k]["communities"]
-        optimal_model = k_scores[optimal_k]["kmeans_model"]
-
-        print(f"\nFINAL DECISION: k={optimal_k}")
-        print(f"Reasoning: Calinski-Harabasz optimization (better at finding true k)")
-        print("=" * 60)
+        print(f"\n✓ OPTIMAL CLUSTERING: {best_k} clusters")
+        print(f"  Resolution: {optimal_result['resolution']:.3f}")
+        print(f"  Silhouette Score: {optimal_result['silhouette']:.3f}")
 
         # Save optimization results
-        optimization_file = self.output_dir / "cluster_optimization.txt"
+        optimization_file = self.output_dir / "resolution_optimization.txt"
         with open(optimization_file, "w", encoding="utf-8") as f:
-            f.write("CLUSTER OPTIMIZATION RESULTS\n")
+            f.write("RESOLUTION OPTIMIZATION RESULTS\n")
             f.write("=" * 50 + "\n\n")
-            f.write(f"METHOD: K-Means Clustering\n")
-            f.write(f"PRIMARY CRITERION: Calinski-Harabasz Index\n")
-            f.write(f"Optimal number of clusters: {optimal_k}\n\n")
-            f.write("Optimization Results:\n")
-            f.write(
-                f"Best Silhouette Score: k={best_silhouette_k} (score: {k_scores[best_silhouette_k]['silhouette']:.3f})\n"
-            )
-            f.write(
-                f"Best Calinski-Harabasz: k={best_ch_k} (score: {k_scores[best_ch_k]['calinski_harabasz']:.0f})\n"
-            )
-            f.write(
-                f"Best Davies-Bouldin: k={best_db_k} (score: {k_scores[best_db_k]['davies_bouldin']:.3f})\n"
-            )
-            f.write(f"Final choice: k={optimal_k}\n\n")
-            f.write("All Tested Cluster Numbers:\n")
-            f.write("k | Silhouette | Calinski-H | Davies-B | Inertia\n")
-            f.write("-" * 55 + "\n")
-            for k in sorted(k_scores.keys()):
-                sil = k_scores[k]["silhouette"]
-                ch = k_scores[k]["calinski_harabasz"]
-                db = k_scores[k]["davies_bouldin"]
-                inertia = k_scores[k]["inertia"]
-                marker = " <- CHOSEN" if k == optimal_k else ""
+            f.write(f"TARGET CLUSTER RANGE: 2-6 clusters\n")
+            f.write(f"OPTIMIZATION CRITERION: Silhouette Score\n")
+            f.write(f"Optimal Number of Clusters: {best_k}\n")
+            f.write(f"Optimal Resolution: {optimal_result['resolution']:.3f}\n")
+            f.write(f"Best Silhouette Score: {optimal_result['silhouette']:.3f}\n\n")
+            f.write("All Tested Cluster Counts:\n")
+            f.write("Clusters | Resolution | Silhouette\n")
+            f.write("-" * 35 + "\n")
+            for k in sorted(resolution_mapping.keys()):
+                result = resolution_mapping[k]
+                marker = " <- OPTIMAL" if k == best_k else ""
                 f.write(
-                    f"{k:2d}|   {sil:.3f}    |   {ch:7.0f}  |  {db:.3f}   | {inertia:8.0f}{marker}\n"
+                    f"   {k:2d}    |   {result['resolution']:.3f}    |   {result['silhouette']:.3f}{marker}\n"
                 )
 
-        print(f"Cluster optimization results saved to: {optimization_file}")
+        print(f"\nOptimization results saved to: {optimization_file}")
 
-        return optimal_k, optimal_communities, optimal_model, k_scores
+        return best_k, optimal_result
 
     def compute_coherence_for_communities(self, communities):
         """Compute coherence scores for a set of communities (memory-efficient)"""
         coherence_scores = {}
 
-        for community_id in sorted(set(communities)):
+        for community_id in set(communities):
             members = np.where(communities == community_id)[0]
 
             if len(members) < 2:
@@ -261,9 +287,6 @@ class SubregisterAnalyzer:
                 sample_size = min(500, len(members))
                 sample_members = np.random.choice(members, sample_size, replace=False)
                 community_embeddings = self.embeddings_pca_norm[sample_members]
-                print(
-                    f"  Cluster {community_id}: Sampling {sample_size}/{len(members)} documents for coherence"
-                )
             else:
                 community_embeddings = self.embeddings_pca_norm[members]
 
@@ -283,117 +306,120 @@ class SubregisterAnalyzer:
 
         return coherence_scores
 
-    def analyze_communities(self, k, top_n=10):
-        """Analyze and sample documents from each cluster"""
-        communities = self.community_results[k]
+    def analyze_communities(self, k, optimal_result, top_n=10):
+        """Analyze and sample documents from each community"""
+        communities = optimal_result["communities"]
+        resolution = optimal_result["resolution"]
 
         # Compute coherence scores for all communities
-        print(f"Computing coherence scores for cluster analysis (k={k})...")
+        print(f"Computing coherence scores for {k} communities...")
         coherence_scores = self.compute_coherence_for_communities(communities)
 
-        analysis_text = f"\n=== CLUSTER ANALYSIS (k={k}) ===\n"
+        analysis_text = f"\n=== COMMUNITY ANALYSIS ({k} clusters, resolution={resolution:.3f}) ===\n"
         print(analysis_text)
 
         # Save analysis to file
-        analysis_file = self.output_dir / f"cluster_analysis_k_{k}.txt"
+        analysis_file = self.output_dir / f"community_analysis_{k}_clusters.txt"
 
         with open(analysis_file, "w", encoding="utf-8") as f:
             f.write(analysis_text)
 
-            for cluster_id in sorted(set(communities)):
-                members = np.where(communities == cluster_id)[0]
-                coherence_score = coherence_scores.get(cluster_id, 0.0)
+            for community_id in sorted(set(communities)):
+                members = np.where(communities == community_id)[0]
+                coherence_score = coherence_scores.get(community_id, 0.0)
 
-                section = f"\n--- Cluster {cluster_id} ({len(members)} documents, coherence: {coherence_score:.3f}) ---\n"
+                section = f"\n--- Community {community_id} ({len(members)} documents, coherence: {coherence_score:.3f}) ---\n"
                 print(section)
                 f.write(section)
 
                 # Sample representative documents
-                if len(members) > 0:
-                    sample_indices = np.random.choice(
-                        members, min(top_n, len(members)), replace=False
+                sample_indices = np.random.choice(
+                    members, min(top_n, len(members)), replace=False
+                )
+
+                for i, idx in enumerate(sample_indices):
+                    # Get full predictions for this document
+                    doc_preds = self.preds[idx]
+                    # Escape newlines and save full text
+                    full_text = (
+                        self.texts[idx].replace("\n", "\\n").replace("\r", "\\r")
                     )
+                    line = f"{i + 1}. [{idx}] {doc_preds} {full_text}\n"
+                    # For console output, show predictions and truncated text
+                    truncated_text = (
+                        self.texts[idx][:100] + "..."
+                        if len(self.texts[idx]) > 100
+                        else self.texts[idx]
+                    )
+                    print(f"{i + 1}. [{idx}] {doc_preds} {truncated_text}")
+                    f.write(line)
 
-                    for i, idx in enumerate(sample_indices):
-                        # Get full predictions for this document
-                        doc_preds = self.preds[idx]
-                        # Escape newlines and save full text
-                        full_text = (
-                            self.texts[idx].replace("\n", "\\n").replace("\r", "\\r")
-                        )
-                        line = f"{i + 1}. [{idx}] {doc_preds} {full_text}\n"
-                        # For console output, show predictions and truncated text
-                        truncated_text = (
-                            self.texts[idx][:100] + "..."
-                            if len(self.texts[idx]) > 100
-                            else self.texts[idx]
-                        )
-                        print(f"{i + 1}. [{idx}] {doc_preds} {truncated_text}")
-                        f.write(line)
+                if len(members) > top_n:
+                    remaining = f"... and {len(members) - top_n} more documents\n"
+                    print(remaining.strip())
+                    f.write(remaining)
 
-                    if len(members) > top_n:
-                        remaining = f"... and {len(members) - top_n} more documents\n"
-                        print(remaining.strip())
-                        f.write(remaining)
+        print(f"Community analysis saved to: {analysis_file}")
+        return coherence_scores
 
-        print(f"Cluster analysis saved to: {analysis_file}")
+    def compute_community_coherence(self, k, optimal_result, coherence_scores):
+        """Save community coherence scores"""
+        resolution = optimal_result["resolution"]
 
-    def compute_cluster_coherence(self, k):
-        """Compute intra-cluster coherence scores (memory-efficient)"""
-        communities = self.community_results[k]
-
-        print(f"Computing cluster coherence scores (k={k})...")
-        coherence_scores = self.compute_coherence_for_communities(communities)
-
-        coherence_text = f"Cluster Coherence Scores (k={k}):\n"
+        coherence_text = (
+            f"Community Coherence Scores ({k} clusters, resolution={resolution:.3f}):\n"
+        )
 
         # Print and save results
-        print(f"\nCluster Coherence Scores (k={k}):")
-        for cluster_id, score in sorted(coherence_scores.items()):
-            line = f"Cluster {cluster_id}: {score:.3f}"
+        print(f"\nCommunity Coherence Scores ({k} clusters):")
+        for community_id, score in sorted(coherence_scores.items()):
+            line = f"Community {community_id}: {score:.3f}"
             print(line)
             coherence_text += line + "\n"
 
         # Save coherence scores
-        coherence_file = self.output_dir / f"coherence_scores_k_{k}.txt"
+        coherence_file = self.output_dir / f"coherence_scores_{k}_clusters.txt"
         with open(coherence_file, "w", encoding="utf-8") as f:
             f.write(coherence_text)
         print(f"Coherence scores saved to: {coherence_file}")
 
         return coherence_scores
 
-    def compute_silhouette_analysis(self, k):
-        """Compute silhouette scores for cluster validation"""
-        communities = self.community_results[k]
+    def compute_silhouette_analysis(self, k, optimal_result):
+        """Compute silhouette scores for community validation"""
+        communities = optimal_result["communities"]
+        resolution = optimal_result["resolution"]
 
-        print(f"Computing silhouette scores (k={k})...")
+        print(f"Computing detailed silhouette analysis for {k} clusters...")
 
         try:
-            # Overall silhouette score
-            overall_silhouette = silhouette_score(
-                self.embeddings_pca_norm, communities, metric="cosine"
-            )
+            # Overall silhouette score (already computed)
+            overall_silhouette = optimal_result["silhouette"]
 
             # Individual silhouette scores for each document
             sample_silhouette_values = silhouette_samples(
                 self.embeddings_pca_norm, communities, metric="cosine"
             )
 
-            # Compute average silhouette score per cluster
-            cluster_silhouettes = {}
-            for cluster_id in sorted(set(communities)):
-                mask = communities == cluster_id
+            # Compute average silhouette score per community
+            community_silhouettes = {}
+            for community_id in sorted(set(communities)):
+                mask = communities == community_id
                 if np.sum(mask) > 1:  # Need at least 2 documents
-                    cluster_avg = np.mean(sample_silhouette_values[mask])
-                    cluster_silhouettes[cluster_id] = cluster_avg
+                    community_avg = np.mean(sample_silhouette_values[mask])
+                    community_silhouettes[community_id] = community_avg
                 else:
-                    cluster_silhouettes[cluster_id] = 0.0
+                    community_silhouettes[community_id] = 0.0
 
             # Print results
-            print(f"\nOverall Silhouette Score (k={k}): {overall_silhouette:.3f}")
-            print(f"\nPer-Cluster Silhouette Scores (k={k}):")
+            print(
+                f"\nOverall Silhouette Score ({k} clusters): {overall_silhouette:.3f}"
+            )
+            print(f"\nPer-Community Silhouette Scores:")
 
-            silhouette_text = f"SILHOUETTE ANALYSIS (k={k})\n"
+            silhouette_text = (
+                f"SILHOUETTE ANALYSIS ({k} clusters, resolution={resolution:.3f})\n"
+            )
             silhouette_text += f"==================\n\n"
             silhouette_text += f"Overall Silhouette Score: {overall_silhouette:.3f}\n"
             silhouette_text += f"Interpretation:\n"
@@ -402,35 +428,36 @@ class SubregisterAnalyzer:
             silhouette_text += f"  > 0.3: Weak but acceptable structure\n"
             silhouette_text += f"  < 0.3: Poor cluster structure\n"
             silhouette_text += f"  < 0.0: Documents may be in wrong clusters\n\n"
-            silhouette_text += f"Per-Cluster Silhouette Scores:\n"
+            silhouette_text += f"Per-Community Silhouette Scores:\n"
 
-            for cluster_id, score in sorted(cluster_silhouettes.items()):
-                line = f"Cluster {cluster_id}: {score:.3f}"
+            for community_id, score in sorted(community_silhouettes.items()):
+                line = f"Community {community_id}: {score:.3f}"
                 print(line)
                 silhouette_text += line + "\n"
 
             # Save silhouette scores
-            silhouette_file = self.output_dir / f"silhouette_analysis_k_{k}.txt"
+            silhouette_file = self.output_dir / f"silhouette_analysis_{k}_clusters.txt"
             with open(silhouette_file, "w", encoding="utf-8") as f:
                 f.write(silhouette_text)
             print(f"\nSilhouette analysis saved to: {silhouette_file}")
 
-            return overall_silhouette, cluster_silhouettes
+            return overall_silhouette, community_silhouettes
 
         except Exception as e:
             print(f"Error computing silhouette scores: {e}")
             return None, {}
 
-    def visualize_clusters_umap(self, k):
-        """Visualize clusters using UMAP"""
+    def visualize_communities_umap(self, k, optimal_result):
+        """Visualize communities using UMAP"""
         try:
-            print(
-                f"Creating UMAP visualization for all {len(self.embeddings)} documents (k={k})..."
-            )
+            communities = optimal_result["communities"]
+            resolution = optimal_result["resolution"]
+
+            print(f"Creating UMAP visualization for {k} clusters...")
 
             # Use all data
             embeddings_vis = self.embeddings_pca_norm
-            communities_vis = self.community_results[k]
+            communities_vis = communities
 
             # UMAP projection
             umap_model = umap.UMAP(
@@ -452,20 +479,20 @@ class SubregisterAnalyzer:
                 alpha=0.7,
                 s=6,
             )
-            plt.colorbar(scatter, label="Cluster ID")
+            plt.colorbar(scatter, label="Community ID")
 
-            # Add cluster labels at centroids
-            unique_clusters = sorted(set(communities_vis))
-            for cluster_id in unique_clusters:
-                # Find centroid of each cluster
-                mask = communities_vis == cluster_id
+            # Add community labels at centroids
+            unique_communities = sorted(set(communities_vis))
+            for community_id in unique_communities:
+                # Find centroid of each community
+                mask = communities_vis == community_id
                 if np.sum(mask) > 0:
                     centroid_x = np.mean(embedding_2d[mask, 0])
                     centroid_y = np.mean(embedding_2d[mask, 1])
 
                     # Add text label with background
                     plt.annotate(
-                        f"{cluster_id}",
+                        f"{community_id}",
                         (centroid_x, centroid_y),
                         fontsize=14,
                         fontweight="bold",
@@ -479,17 +506,16 @@ class SubregisterAnalyzer:
                         ),
                     )
 
-            plt.title(f"UMAP Visualization of {k} Clusters\nNumbers show Cluster IDs")
+            plt.title(
+                f"UMAP Visualization: {k} Communities (resolution={resolution:.3f})\nNumbers show Community IDs"
+            )
             plt.xlabel("UMAP 1")
             plt.ylabel("UMAP 2")
 
             # Save plot
-            plot_path = self.output_dir / f"umap_clusters_k_{k}.png"
+            plot_path = self.output_dir / f"umap_communities_{k}_clusters.png"
             plt.savefig(plot_path, dpi=150, bbox_inches="tight")
             plt.close()
-
-            # Create a legend mapping colors to cluster IDs
-            self._create_cluster_legend(unique_clusters, k)
 
             # Force garbage collection
             import gc
@@ -504,56 +530,25 @@ class SubregisterAnalyzer:
             plt.close("all")
             return None, None
 
-    def _create_cluster_legend(self, unique_clusters, k):
-        """Create a separate legend figure showing cluster colors"""
-        try:
-            fig, ax = plt.subplots(figsize=(8, max(4, len(unique_clusters) * 0.5)))
-
-            # Get colors from tab10 colormap (good for up to 10 clusters)
-            cmap = plt.cm.tab10
-            colors = [cmap(i / 10) for i in range(len(unique_clusters))]
-
-            # Create legend entries
-            for i, cluster_id in enumerate(unique_clusters):
-                ax.scatter([], [], c=[colors[i]], s=120, label=f"Cluster {cluster_id}")
-
-            ax.legend(loc="center", fontsize=12, ncol=max(1, len(unique_clusters) // 4))
-            ax.set_xlim(0, 1)
-            ax.set_ylim(0, 1)
-            ax.axis("off")
-            ax.set_title(
-                f"Cluster Color Legend (k={k})", fontsize=16, fontweight="bold"
-            )
-
-            # Save legend
-            legend_path = self.output_dir / f"cluster_legend_k_{k}.png"
-            plt.savefig(legend_path, dpi=150, bbox_inches="tight")
-            plt.close()
-
-            print(f"Cluster legend saved to: {legend_path}")
-
-        except Exception as e:
-            print(f"Error creating cluster legend: {e}")
-            plt.close("all")
-
     def run_full_analysis(self):
-        """Run the complete subregister discovery pipeline with K-means clustering"""
+        """Run the complete subregister discovery pipeline with fixed cluster range"""
         try:
             print("=" * 60)
             print("SUBREGISTER DISCOVERY ANALYSIS")
+            print("Target cluster range: 2-6 clusters")
             print("=" * 60)
 
             # Step 1: Dimensionality reduction
             self.reduce_dimensions()
 
-            # Step 2: Find optimal number of clusters
-            optimal_k, optimal_communities, optimal_model, all_scores = (
-                self.find_optimal_k()
-            )
+            # Step 2: Build k-NN graph
+            self.build_knn_graph()
 
-            # Store results
-            self.community_results = {optimal_k: optimal_communities}
-            self.kmeans_model = optimal_model
+            # Step 3: Find resolutions for target cluster counts
+            resolution_mapping = self.find_resolutions_for_target_clusters()
+
+            # Step 4: Select best clustering based on silhouette scores
+            optimal_k, optimal_result = self.select_best_clustering(resolution_mapping)
 
             # Save summary info
             summary_file = self.output_dir / "analysis_summary.txt"
@@ -564,42 +559,44 @@ class SubregisterAnalyzer:
                 f.write(f"Number of documents: {len(self.embeddings)}\n")
                 f.write(f"Embedding dimension: {self.embeddings.shape[1]}\n")
                 f.write(f"Register distribution: {dict(Counter(self.labels))}\n")
-                f.write(f"Clustering method: K-Means\n")
+                f.write(f"k-NN parameter: auto-computed\n")
+                f.write(f"Target cluster range: 2-6 clusters\n")
                 f.write(f"Optimization criterion: Silhouette Score\n")
                 f.write(f"Optimal number of clusters: {optimal_k}\n")
+                f.write(f"Optimal resolution: {optimal_result['resolution']:.3f}\n")
                 f.write(
-                    f"Best silhouette score: {all_scores[optimal_k]['silhouette']:.3f}\n\n"
+                    f"Best silhouette score: {optimal_result['silhouette']:.3f}\n\n"
                 )
 
-            # Step 3: Full analysis at optimal k
+            # Step 5: Full analysis at optimal clustering
             print(f"\n{'=' * 60}")
-            print(f"ANALYZING OPTIMAL CLUSTERING: k={optimal_k}")
-            print(
-                f"CHOSEN FOR BEST SILHOUETTE SCORE: {all_scores[optimal_k]['silhouette']:.3f}"
-            )
+            print(f"ANALYZING OPTIMAL CLUSTERING: {optimal_k} clusters")
+            print(f"Resolution: {optimal_result['resolution']:.3f}")
+            print(f"Silhouette Score: {optimal_result['silhouette']:.3f}")
             print(f"{'=' * 60}")
 
-            # Analyze clusters
-            self.analyze_communities(k=optimal_k)
+            # Analyze communities
+            coherence_scores = self.analyze_communities(optimal_k, optimal_result)
 
             # Compute coherence scores
-            self.compute_cluster_coherence(k=optimal_k)
+            self.compute_community_coherence(
+                optimal_k, optimal_result, coherence_scores
+            )
 
             # Compute silhouette scores for detailed validation
-            self.compute_silhouette_analysis(k=optimal_k)
+            self.compute_silhouette_analysis(optimal_k, optimal_result)
 
             # Visualization
             try:
-                self.visualize_clusters_umap(k=optimal_k)
+                self.visualize_communities_umap(optimal_k, optimal_result)
             except Exception as e:
                 print(f"Skipping UMAP visualization due to error: {e}")
 
             print("\n" + "=" * 60)
             print("ANALYSIS COMPLETE")
-            print(
-                f"Optimal number of clusters: {optimal_k} (chosen for best silhouette score)"
-            )
-            print(f"Best silhouette score: {all_scores[optimal_k]['silhouette']:.3f}")
+            print(f"Optimal clustering: {optimal_k} clusters")
+            print(f"Resolution: {optimal_result['resolution']:.3f}")
+            print(f"Silhouette score: {optimal_result['silhouette']:.3f}")
             print(f"All results saved to: {self.output_dir}")
             print("=" * 60)
 
@@ -631,6 +628,7 @@ if __name__ == "__main__":
         print(f"{i}. {os.path.basename(file)}")
 
     print(f"\nAll results will be saved to: {results_dir}/")
+    print("Target: 2-6 clusters per register")
 
     print("\n" + "=" * 80)
     print("PROCESSING ALL PKL FILES")
@@ -649,7 +647,7 @@ if __name__ == "__main__":
             # Initialize analyzer for this file
             analyzer = SubregisterAnalyzer(pkl_file, results_base_dir=results_dir)
 
-            # Run analysis with K-MEANS clustering
+            # Run analysis with 2-6 cluster optimization
             analyzer.run_full_analysis()
 
             successful_analyses += 1
