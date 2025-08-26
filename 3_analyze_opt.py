@@ -162,7 +162,7 @@ class SubregisterAnalyzer:
         n_communities = len(set(communities))
         return communities, n_communities
 
-    def find_resolutions_for_target_clusters(self, target_clusters=[1, 2, 3, 4, 5, 6]):
+    def find_resolutions_for_target_clusters(self, target_clusters=[2, 3, 4, 5, 6]):
         """Find Leiden resolutions that produce exactly the target number of clusters"""
         print("=" * 60)
         print("FINDING RESOLUTIONS FOR TARGET CLUSTER COUNTS")
