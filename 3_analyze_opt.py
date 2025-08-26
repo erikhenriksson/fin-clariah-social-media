@@ -573,7 +573,7 @@ class SubregisterAnalyzer:
             self.reduce_dimensions()
 
             # Step 2: Build k-NN graph
-            self.build_knn_graph()
+            self.build_knn_graph(30)
 
             # Step 3: Find resolutions for target cluster counts
             resolution_mapping = self.find_resolutions_for_target_clusters()
