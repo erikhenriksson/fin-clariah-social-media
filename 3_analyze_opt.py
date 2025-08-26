@@ -61,9 +61,27 @@ class SubregisterAnalyzer:
             self.embeddings, axis=1, keepdims=True
         )
 
-    def reduce_dimensions(self, n_components=16):
-        """Apply PCA for noise reduction and speedup"""
-        print(f"Applying PCA to reduce to {n_components} dimensions...")
+    def reduce_dimensions(self, target_variance=0.80):
+        """Apply PCA for noise reduction and speedup, automatically selecting components for target variance"""
+
+        # First, fit PCA with all components to get variance ratios
+        print("Determining optimal number of components...")
+        pca_full = PCA(random_state=42)
+        pca_full.fit(self.embeddings_norm)
+
+        # Find minimum components needed for target variance
+        cumulative_variance = np.cumsum(pca_full.explained_variance_ratio_)
+        n_components = np.argmax(cumulative_variance >= target_variance) + 1
+
+        # Ensure we don't exceed the maximum possible components
+        max_components = min(self.embeddings_norm.shape)
+        n_components = min(n_components, max_components)
+
+        print(
+            f"Selected {n_components} components to achieve {target_variance:.1%} explained variance"
+        )
+
+        # Now apply PCA with the optimal number of components
         self.pca = PCA(n_components=n_components, random_state=42)
         self.embeddings_pca = self.pca.fit_transform(self.embeddings_norm)
 
@@ -72,12 +90,11 @@ class SubregisterAnalyzer:
             self.embeddings_pca, axis=1, keepdims=True
         )
 
-        total_variance = self.pca.explained_variance_ratio_.sum()
-        first_10_variance = self.pca.explained_variance_ratio_[:10].sum()
+        # Report results
+        actual_variance = self.pca.explained_variance_ratio_.sum()
         print(
-            f"PCA total variance explained: {total_variance:.3f} (all {n_components} components)"
+            f"PCA total variance explained: {actual_variance:.3f} (using {n_components} components)"
         )
-        print(f"First 10 components explain: {first_10_variance:.3f} of total variance")
 
         return self.embeddings_pca_norm
 
