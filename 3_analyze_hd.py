@@ -92,7 +92,7 @@ class UMAPHDBSCANAnalyzer:
         n_docs = len(self.embeddings_umap)
 
         # Simple fixed parameters
-        min_cluster_size = max(50, n_docs // 50)  # 2% of dataset, minimum 50
+        min_cluster_size = max(50, n_docs // 10)  # 10% of dataset, minimum 50
         min_samples = 30  # Fixed high value - only dense regions become clusters
 
         print(f"Dataset size: {n_docs}")
@@ -103,8 +103,6 @@ class UMAPHDBSCANAnalyzer:
         clusterer = hdbscan.HDBSCAN(
             min_cluster_size=min_cluster_size,
             min_samples=min_samples,
-            metric="euclidean",
-            cluster_selection_method="eom",
         )
 
         cluster_labels = clusterer.fit_predict(self.embeddings_umap)
