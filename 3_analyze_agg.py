@@ -5,12 +5,12 @@ import warnings
 from collections import Counter
 from pathlib import Path
 
+import hdbscan
 import matplotlib.pyplot as plt
 import numpy as np
 import umap
-from sklearn.cluster import AgglomerativeClustering
 from sklearn.decomposition import PCA
-from sklearn.metrics import calinski_harabasz_score, silhouette_score
+from sklearn.metrics import silhouette_score
 from sklearn.metrics.pairwise import cosine_similarity
 
 warnings.filterwarnings("ignore")
@@ -95,125 +95,245 @@ class SubregisterAnalyzer:
 
         return self.embeddings_pca_norm
 
-    def cluster_with_agglomerative(self, n_clusters):
-        """Perform agglomerative clustering with specified number of clusters"""
-        print(f"Running agglomerative clustering for {n_clusters} clusters...")
+    def cluster_with_hdbscan(self, min_cluster_size, min_samples=None, epsilon=None):
+        """Perform HDBSCAN clustering"""
+        if min_samples is None:
+            min_samples = max(
+                5, min_cluster_size // 10
+            )  # Default: 10% of min_cluster_size
 
-        clusterer = AgglomerativeClustering(
-            n_clusters=n_clusters, metric="cosine", linkage="average"
+        print(
+            f"Running HDBSCAN clustering (min_cluster_size={min_cluster_size}, min_samples={min_samples})..."
+        )
+
+        clusterer = hdbscan.HDBSCAN(
+            metric="cosine",
+            min_cluster_size=min_cluster_size,
+            min_samples=min_samples,
+            cluster_selection_epsilon=epsilon,
+            cluster_selection_method="eom",  # Excess of Mass
         )
 
         communities = clusterer.fit_predict(self.embeddings_pca_norm)
-        return communities
+        n_clusters = len(set(communities)) - (
+            1 if -1 in communities else 0
+        )  # Exclude noise cluster (-1)
+        n_noise = np.sum(communities == -1)
 
-    def evaluate_clustering_quality(self, communities, n_clusters):
+        print(f"  Found {n_clusters} clusters and {n_noise} noise points")
+
+        return communities, n_clusters, clusterer
+
+    def evaluate_clustering_quality(self, communities, n_clusters, clusterer):
         """Evaluate clustering quality using multiple metrics"""
-        # Calinski-Harabasz Index (higher is better)
-        ch_score = calinski_harabasz_score(self.embeddings_pca_norm, communities)
+        # Filter out noise points for evaluation
+        mask = communities >= 0
+        if np.sum(mask) < 2:
+            return {
+                "n_clusters": n_clusters,
+                "communities": communities,
+                "dbcv_score": -1.0,
+                "silhouette": -1.0,
+                "clusterer": clusterer,
+                "n_noise": np.sum(communities == -1),
+            }
 
-        # Silhouette Score (for comparison, though not primary metric)
-        sil_score = silhouette_score(
-            self.embeddings_pca_norm, communities, metric="cosine"
-        )
+        # DBCV Score (Density-Based Cluster Validation) - native to HDBSCAN
+        try:
+            dbcv_score = clusterer.relative_validity_
+            if dbcv_score is None:
+                dbcv_score = -1.0
+        except:
+            dbcv_score = -1.0
+
+        # Silhouette Score (excluding noise points)
+        try:
+            if n_clusters > 1:
+                sil_score = silhouette_score(
+                    self.embeddings_pca_norm[mask], communities[mask], metric="cosine"
+                )
+            else:
+                sil_score = -1.0
+        except:
+            sil_score = -1.0
 
         return {
             "n_clusters": n_clusters,
             "communities": communities,
-            "calinski_harabasz": ch_score,
+            "dbcv_score": dbcv_score,
             "silhouette": sil_score,
+            "clusterer": clusterer,
+            "n_noise": np.sum(communities == -1),
         }
 
-    def find_optimal_clusters(self, cluster_range=[2, 3, 4, 5, 6]):
-        """Find optimal number of clusters using Calinski-Harabasz Index"""
+    def find_optimal_clusters(self, target_range=[2, 6]):
+        """Find optimal clustering by testing different min_cluster_sizes"""
         print("=" * 60)
-        print("FINDING OPTIMAL NUMBER OF CLUSTERS")
+        print("FINDING OPTIMAL CLUSTERING WITH HDBSCAN")
         print("=" * 60)
 
         results = {}
+        n_docs = len(self.embeddings)
 
-        for n_clusters in cluster_range:
-            print(f"\nTesting {n_clusters} clusters...")
+        # Generate candidate min_cluster_sizes that might yield clusters in target range
+        # Strategy: Start with larger min_cluster_size for fewer clusters, decrease for more clusters
+        min_cluster_candidates = []
+
+        # Conservative estimates based on dataset size and target clusters
+        base_size = max(50, n_docs // (max(target_range) * 3))  # Start conservative
+        for i in range(8):  # Test 8 different sizes
+            size = max(25, int(base_size * (0.7**i)))  # Exponentially decrease
+            min_cluster_candidates.append(size)
+
+        # Remove duplicates and sort
+        min_cluster_candidates = sorted(list(set(min_cluster_candidates)), reverse=True)
+
+        print(f"Testing min_cluster_sizes: {min_cluster_candidates}")
+
+        for min_cluster_size in min_cluster_candidates:
+            print(f"\nTesting min_cluster_size={min_cluster_size}...")
 
             # Perform clustering
-            communities = self.cluster_with_agglomerative(n_clusters)
+            communities, n_clusters, clusterer = self.cluster_with_hdbscan(
+                min_cluster_size=min_cluster_size
+            )
+
+            # Skip if no clusters found or only one cluster
+            if n_clusters < 2:
+                print(f"  Skipping: only {n_clusters} clusters found")
+                continue
 
             # Evaluate clustering quality
-            result = self.evaluate_clustering_quality(communities, n_clusters)
-            results[n_clusters] = result
+            result = self.evaluate_clustering_quality(
+                communities, n_clusters, clusterer
+            )
+            result["min_cluster_size"] = min_cluster_size
 
-            print(f"  Calinski-Harabasz Score: {result['calinski_harabasz']:.3f}")
-            print(f"  Silhouette Score: {result['silhouette']:.3f}")
+            # Only keep results in our target range
+            if target_range[0] <= n_clusters <= target_range[1]:
+                results[f"{min_cluster_size}_{n_clusters}"] = result
+                print(
+                    f"  ✓ {n_clusters} clusters, DBCV: {result['dbcv_score']:.3f}, "
+                    f"Silhouette: {result['silhouette']:.3f}, Noise: {result['n_noise']}"
+                )
+            else:
+                print(
+                    f"  ✗ {n_clusters} clusters (outside target range {target_range})"
+                )
+
+        if not results:
+            # Fallback: try smaller min_cluster_sizes to get any reasonable clustering
+            print(
+                f"\nNo clustering in target range found. Trying smaller min_cluster_sizes..."
+            )
+            fallback_sizes = [20, 15, 10, 5]
+            for min_cluster_size in fallback_sizes:
+                print(f"\nFallback: testing min_cluster_size={min_cluster_size}...")
+                communities, n_clusters, clusterer = self.cluster_with_hdbscan(
+                    min_cluster_size=min_cluster_size
+                )
+                if n_clusters >= 2:
+                    result = self.evaluate_clustering_quality(
+                        communities, n_clusters, clusterer
+                    )
+                    result["min_cluster_size"] = min_cluster_size
+                    results[f"{min_cluster_size}_{n_clusters}"] = result
+                    print(
+                        f"  ✓ {n_clusters} clusters, DBCV: {result['dbcv_score']:.3f}, "
+                        f"Silhouette: {result['silhouette']:.3f}, Noise: {result['n_noise']}"
+                    )
+                    break
 
         return results
 
     def select_best_clustering(self, results):
-        """Select the best clustering based on Calinski-Harabasz Index"""
+        """Select the best clustering based on DBCV score (primary) and silhouette (secondary)"""
         print("\n" + "=" * 60)
         print("SELECTING BEST CLUSTERING")
         print("=" * 60)
 
-        print("\nCluster Count | Calinski-Harabasz | Silhouette Score")
-        print("-" * 55)
+        if not results:
+            raise ValueError("No valid clustering results found!")
 
-        best_k = None
-        best_ch_score = -1
+        print("\nMin_Cluster_Size | Clusters | DBCV Score | Silhouette | Noise Points")
+        print("-" * 70)
 
-        for k in sorted(results.keys()):
-            result = results[k]
-            ch_score = result["calinski_harabasz"]
+        best_key = None
+        best_dbcv = -2.0  # DBCV can be negative
+        best_silhouette = -2.0
+
+        for key in sorted(results.keys()):
+            result = results[key]
+            min_cluster_size = result["min_cluster_size"]
+            n_clusters = result["n_clusters"]
+            dbcv_score = result["dbcv_score"]
             sil_score = result["silhouette"]
+            n_noise = result["n_noise"]
 
             marker = ""
-            if ch_score > best_ch_score:
-                best_ch_score = ch_score
-                best_k = k
+
+            # Primary criterion: DBCV score
+            if dbcv_score > best_dbcv:
+                best_dbcv = dbcv_score
+                best_silhouette = sil_score
+                best_key = key
+                marker = " <- BEST"
+            elif dbcv_score == best_dbcv and sil_score > best_silhouette:
+                # Tie-breaker: silhouette score
+                best_silhouette = sil_score
+                best_key = key
                 marker = " <- BEST"
 
             print(
-                f"     {k:2d}       |      {ch_score:.3f}       |     {sil_score:.3f}    {marker}"
+                f"      {min_cluster_size:3d}        |    {n_clusters:2d}    |   {dbcv_score:6.3f}   |   {sil_score:6.3f}   |     {n_noise:4d}    {marker}"
             )
 
-        optimal_result = results[best_k]
+        optimal_result = results[best_key]
+        optimal_k = optimal_result["n_clusters"]
 
-        print(f"\n✓ OPTIMAL CLUSTERING: {best_k} clusters")
-        print(f"  Calinski-Harabasz Score: {optimal_result['calinski_harabasz']:.3f}")
+        print(f"\n✓ OPTIMAL CLUSTERING: {optimal_k} clusters")
+        print(f"  Min Cluster Size: {optimal_result['min_cluster_size']}")
+        print(f"  DBCV Score: {optimal_result['dbcv_score']:.3f}")
         print(f"  Silhouette Score: {optimal_result['silhouette']:.3f}")
+        print(f"  Noise Points: {optimal_result['n_noise']}")
 
         # Save optimization results
         optimization_file = self.output_dir / "clustering_optimization.txt"
         with open(optimization_file, "w", encoding="utf-8") as f:
             f.write("CLUSTERING OPTIMIZATION RESULTS\n")
             f.write("=" * 50 + "\n\n")
-            f.write(f"TARGET CLUSTER RANGE: 2-6 clusters\n")
+            f.write(f"CLUSTERING METHOD: HDBSCAN (cosine distance)\n")
             f.write(
-                f"CLUSTERING METHOD: Agglomerative (cosine distance, average linkage)\n"
+                f"OPTIMIZATION CRITERION: DBCV Score (primary), Silhouette (secondary)\n"
             )
-            f.write(f"OPTIMIZATION CRITERION: Calinski-Harabasz Index\n")
-            f.write(f"Optimal Number of Clusters: {best_k}\n")
+            f.write(f"Optimal Number of Clusters: {optimal_k}\n")
+            f.write(f"Optimal Min Cluster Size: {optimal_result['min_cluster_size']}\n")
+            f.write(f"Best DBCV Score: {optimal_result['dbcv_score']:.3f}\n")
             f.write(
-                f"Best Calinski-Harabasz Score: {optimal_result['calinski_harabasz']:.3f}\n"
+                f"Corresponding Silhouette Score: {optimal_result['silhouette']:.3f}\n"
             )
-            f.write(
-                f"Corresponding Silhouette Score: {optimal_result['silhouette']:.3f}\n\n"
-            )
-            f.write("All Tested Cluster Counts:\n")
-            f.write("Clusters | Calinski-Harabasz | Silhouette\n")
-            f.write("-" * 45 + "\n")
-            for k in sorted(results.keys()):
-                result = results[k]
-                marker = " <- OPTIMAL" if k == best_k else ""
+            f.write(f"Noise Points: {optimal_result['n_noise']}\n\n")
+            f.write("All Tested Configurations:\n")
+            f.write("Min_Cluster_Size | Clusters | DBCV Score | Silhouette | Noise\n")
+            f.write("-" * 60 + "\n")
+            for key in sorted(results.keys()):
+                result = results[key]
+                marker = " <- OPTIMAL" if key == best_key else ""
                 f.write(
-                    f"   {k:2d}    |      {result['calinski_harabasz']:.3f}       |   {result['silhouette']:.3f}{marker}\n"
+                    f"      {result['min_cluster_size']:3d}        |    {result['n_clusters']:2d}    |   {result['dbcv_score']:6.3f}   |   {result['silhouette']:6.3f}   |   {result['n_noise']:4d}  {marker}\n"
                 )
 
         print(f"\nOptimization results saved to: {optimization_file}")
-        return best_k, optimal_result
+        return optimal_k, optimal_result
 
     def compute_coherence_for_communities(self, communities):
         """Compute coherence scores for a set of communities (memory-efficient)"""
         coherence_scores = {}
 
         for community_id in set(communities):
+            if community_id == -1:  # Skip noise cluster
+                continue
+
             members = np.where(communities == community_id)[0]
 
             if len(members) < 2:
@@ -248,15 +368,14 @@ class SubregisterAnalyzer:
     def analyze_communities(self, k, optimal_result, top_n=10):
         """Analyze and sample documents from each community"""
         communities = optimal_result["communities"]
-        ch_score = optimal_result["calinski_harabasz"]
+        dbcv_score = optimal_result["dbcv_score"]
+        n_noise = optimal_result["n_noise"]
 
         # Compute coherence scores for all communities
         print(f"Computing coherence scores for {k} communities...")
         coherence_scores = self.compute_coherence_for_communities(communities)
 
-        analysis_text = (
-            f"\n=== COMMUNITY ANALYSIS ({k} clusters, CH-score={ch_score:.3f}) ===\n"
-        )
+        analysis_text = f"\n=== COMMUNITY ANALYSIS ({k} clusters, DBCV={dbcv_score:.3f}, {n_noise} noise points) ===\n"
         print(analysis_text)
 
         # Save analysis to file
@@ -265,7 +384,34 @@ class SubregisterAnalyzer:
         with open(analysis_file, "w", encoding="utf-8") as f:
             f.write(analysis_text)
 
-            for community_id in sorted(set(communities)):
+            # First, handle noise cluster if it exists
+            if -1 in communities:
+                noise_members = np.where(communities == -1)[0]
+                section = f"\n--- NOISE CLUSTER ({len(noise_members)} documents) ---\n"
+                print(section)
+                f.write(section)
+
+                # Sample a few noise points
+                sample_indices = np.random.choice(
+                    noise_members, min(5, len(noise_members)), replace=False
+                )
+
+                for i, idx in enumerate(sample_indices):
+                    doc_preds = self.preds[idx]
+                    full_text = (
+                        self.texts[idx].replace("\n", "\\n").replace("\r", "\\r")
+                    )
+                    line = f"{i + 1}. [{idx}] {doc_preds} {full_text}\n"
+                    truncated_text = (
+                        self.texts[idx][:100] + "..."
+                        if len(self.texts[idx]) > 100
+                        else self.texts[idx]
+                    )
+                    print(f"{i + 1}. [{idx}] {doc_preds} {truncated_text}")
+                    f.write(line)
+
+            # Now handle regular clusters
+            for community_id in sorted([c for c in set(communities) if c >= 0]):
                 members = np.where(communities == community_id)[0]
                 coherence_score = coherence_scores.get(community_id, 0.0)
 
@@ -305,10 +451,10 @@ class SubregisterAnalyzer:
 
     def compute_community_coherence(self, k, optimal_result, coherence_scores):
         """Save community coherence scores"""
-        ch_score = optimal_result["calinski_harabasz"]
+        dbcv_score = optimal_result["dbcv_score"]
 
         coherence_text = (
-            f"Community Coherence Scores ({k} clusters, CH-score={ch_score:.3f}):\n"
+            f"Community Coherence Scores ({k} clusters, DBCV={dbcv_score:.3f}):\n"
         )
 
         # Print and save results
@@ -329,44 +475,55 @@ class SubregisterAnalyzer:
     def compute_silhouette_analysis(self, k, optimal_result):
         """Compute silhouette scores for community validation"""
         communities = optimal_result["communities"]
-        ch_score = optimal_result["calinski_harabasz"]
+        dbcv_score = optimal_result["dbcv_score"]
+        n_noise = optimal_result["n_noise"]
 
         print(f"Computing detailed silhouette analysis for {k} clusters...")
 
         try:
-            # Overall silhouette score (already computed)
+            # Overall silhouette score (already computed, excluding noise)
             overall_silhouette = optimal_result["silhouette"]
 
-            # Individual silhouette scores for each document
-            from sklearn.metrics import silhouette_samples
+            # Individual silhouette scores for each document (excluding noise)
+            mask = communities >= 0
+            if np.sum(mask) > 1:
+                from sklearn.metrics import silhouette_samples
 
-            sample_silhouette_values = silhouette_samples(
-                self.embeddings_pca_norm, communities, metric="cosine"
-            )
+                sample_silhouette_values = silhouette_samples(
+                    self.embeddings_pca_norm[mask], communities[mask], metric="cosine"
+                )
 
-            # Compute average silhouette score per community
-            community_silhouettes = {}
-            for community_id in sorted(set(communities)):
-                mask = communities == community_id
-                if np.sum(mask) > 1:  # Need at least 2 documents
-                    community_avg = np.mean(sample_silhouette_values[mask])
-                    community_silhouettes[community_id] = community_avg
-                else:
-                    community_silhouettes[community_id] = 0.0
+                # Compute average silhouette score per community
+                community_silhouettes = {}
+                communities_filtered = communities[mask]
+
+                for community_id in sorted([c for c in set(communities) if c >= 0]):
+                    community_mask = communities_filtered == community_id
+                    if np.sum(community_mask) > 1:  # Need at least 2 documents
+                        community_avg = np.mean(
+                            sample_silhouette_values[community_mask]
+                        )
+                        community_silhouettes[community_id] = community_avg
+                    else:
+                        community_silhouettes[community_id] = 0.0
+            else:
+                community_silhouettes = {}
 
             # Print results
             print(
                 f"\nOverall Silhouette Score ({k} clusters): {overall_silhouette:.3f}"
             )
-            print(f"Overall Calinski-Harabasz Score ({k} clusters): {ch_score:.3f}")
+            print(f"Overall DBCV Score ({k} clusters): {dbcv_score:.3f}")
+            print(f"Noise points: {n_noise}")
             print(f"\nPer-Community Silhouette Scores:")
 
             silhouette_text = (
-                f"SILHOUETTE ANALYSIS ({k} clusters, CH-score={ch_score:.3f})\n"
+                f"SILHOUETTE ANALYSIS ({k} clusters, DBCV={dbcv_score:.3f})\n"
             )
             silhouette_text += f"==================\n\n"
             silhouette_text += f"Overall Silhouette Score: {overall_silhouette:.3f}\n"
-            silhouette_text += f"Overall Calinski-Harabasz Score: {ch_score:.3f}\n"
+            silhouette_text += f"Overall DBCV Score: {dbcv_score:.3f}\n"
+            silhouette_text += f"Noise Points: {n_noise}\n"
             silhouette_text += f"Interpretation:\n"
             silhouette_text += f"  Silhouette > 0.7: Strong cluster structure\n"
             silhouette_text += f"  Silhouette > 0.5: Reasonable cluster structure\n"
@@ -375,7 +532,8 @@ class SubregisterAnalyzer:
             silhouette_text += (
                 f"  Silhouette < 0.0: Documents may be in wrong clusters\n"
             )
-            silhouette_text += f"  Calinski-Harabasz: Higher values indicate better-defined clusters\n\n"
+            silhouette_text += f"  DBCV > 0.0: Well-separated dense clusters\n"
+            silhouette_text += f"  DBCV < 0.0: Poor cluster separation or density\n\n"
             silhouette_text += f"Per-Community Silhouette Scores:\n"
 
             for community_id, score in sorted(community_silhouettes.items()):
@@ -399,7 +557,8 @@ class SubregisterAnalyzer:
         """Visualize communities using UMAP"""
         try:
             communities = optimal_result["communities"]
-            ch_score = optimal_result["calinski_harabasz"]
+            dbcv_score = optimal_result["dbcv_score"]
+            n_noise = optimal_result["n_noise"]
 
             print(f"Creating UMAP visualization for {k} clusters...")
 
@@ -419,46 +578,67 @@ class SubregisterAnalyzer:
 
             # Plot and save
             plt.figure(figsize=(14, 10))
-            scatter = plt.scatter(
-                embedding_2d[:, 0],
-                embedding_2d[:, 1],
-                c=communities_vis,
-                cmap="tab10",
-                alpha=0.7,
-                s=6,
-            )
-            plt.colorbar(scatter, label="Community ID")
 
-            # Add community labels at centroids
-            unique_communities = sorted(set(communities_vis))
-            for community_id in unique_communities:
-                # Find centroid of each community
-                mask = communities_vis == community_id
-                if np.sum(mask) > 0:
-                    centroid_x = np.mean(embedding_2d[mask, 0])
-                    centroid_y = np.mean(embedding_2d[mask, 1])
+            # Handle noise points separately
+            noise_mask = communities_vis == -1
+            cluster_mask = communities_vis >= 0
 
-                    # Add text label with background
-                    plt.annotate(
-                        f"{community_id}",
-                        (centroid_x, centroid_y),
-                        fontsize=14,
-                        fontweight="bold",
-                        ha="center",
-                        va="center",
-                        bbox=dict(
-                            boxstyle="round,pad=0.4",
-                            facecolor="white",
-                            edgecolor="black",
-                            alpha=0.9,
-                        ),
-                    )
+            # Plot noise points in gray
+            if np.any(noise_mask):
+                plt.scatter(
+                    embedding_2d[noise_mask, 0],
+                    embedding_2d[noise_mask, 1],
+                    c="lightgray",
+                    alpha=0.3,
+                    s=3,
+                    label="Noise",
+                )
+
+            # Plot cluster points
+            if np.any(cluster_mask):
+                scatter = plt.scatter(
+                    embedding_2d[cluster_mask, 0],
+                    embedding_2d[cluster_mask, 1],
+                    c=communities_vis[cluster_mask],
+                    cmap="tab10",
+                    alpha=0.7,
+                    s=6,
+                )
+                plt.colorbar(scatter, label="Community ID")
+
+                # Add community labels at centroids
+                unique_communities = sorted([c for c in set(communities_vis) if c >= 0])
+                for community_id in unique_communities:
+                    # Find centroid of each community
+                    mask = communities_vis == community_id
+                    if np.sum(mask) > 0:
+                        centroid_x = np.mean(embedding_2d[mask, 0])
+                        centroid_y = np.mean(embedding_2d[mask, 1])
+
+                        # Add text label with background
+                        plt.annotate(
+                            f"{community_id}",
+                            (centroid_x, centroid_y),
+                            fontsize=14,
+                            fontweight="bold",
+                            ha="center",
+                            va="center",
+                            bbox=dict(
+                                boxstyle="round,pad=0.4",
+                                facecolor="white",
+                                edgecolor="black",
+                                alpha=0.9,
+                            ),
+                        )
 
             plt.title(
-                f"UMAP Visualization: {k} Communities (CH-score={ch_score:.3f})\nNumbers show Community IDs"
+                f"UMAP Visualization: {k} Communities (DBCV={dbcv_score:.3f}, {n_noise} noise)\nNumbers show Community IDs"
             )
             plt.xlabel("UMAP 1")
             plt.ylabel("UMAP 2")
+
+            if np.any(noise_mask):
+                plt.legend()
 
             # Save plot
             plot_path = self.output_dir / f"umap_communities_{k}_clusters.png"
@@ -479,18 +659,18 @@ class SubregisterAnalyzer:
             return None, None
 
     def run_full_analysis(self):
-        """Run the complete subregister discovery pipeline with agglomerative clustering"""
+        """Run the complete subregister discovery pipeline with HDBSCAN"""
         try:
             print("=" * 60)
             print("SUBREGISTER DISCOVERY ANALYSIS")
-            print("Method: Agglomerative Clustering (cosine distance)")
+            print("Method: HDBSCAN (cosine distance)")
             print("Target cluster range: 2-6 clusters")
             print("=" * 60)
 
             # Step 1: Dimensionality reduction
             self.reduce_dimensions()
 
-            # Step 2: Find optimal clusters using Calinski-Harabasz Index
+            # Step 2: Find optimal clusters using DBCV score
             results = self.find_optimal_clusters()
 
             # Step 3: Select best clustering
@@ -505,24 +685,28 @@ class SubregisterAnalyzer:
                 f.write(f"Number of documents: {len(self.embeddings)}\n")
                 f.write(f"Embedding dimension: {self.embeddings.shape[1]}\n")
                 f.write(f"Register distribution: {dict(Counter(self.labels))}\n")
-                f.write(
-                    f"Clustering method: Agglomerative (cosine distance, average linkage)\n"
-                )
+                f.write(f"Clustering method: HDBSCAN (cosine distance)\n")
                 f.write(f"Target cluster range: 2-6 clusters\n")
-                f.write(f"Optimization criterion: Calinski-Harabasz Index\n")
+                f.write(
+                    f"Optimization criterion: DBCV Score (primary), Silhouette (secondary)\n"
+                )
                 f.write(f"Optimal number of clusters: {optimal_k}\n")
                 f.write(
-                    f"Best Calinski-Harabasz score: {optimal_result['calinski_harabasz']:.3f}\n"
+                    f"Optimal min_cluster_size: {optimal_result['min_cluster_size']}\n"
                 )
+                f.write(f"Best DBCV score: {optimal_result['dbcv_score']:.3f}\n")
                 f.write(
-                    f"Corresponding silhouette score: {optimal_result['silhouette']:.3f}\n\n"
+                    f"Corresponding silhouette score: {optimal_result['silhouette']:.3f}\n"
                 )
+                f.write(f"Noise points: {optimal_result['n_noise']}\n\n")
 
             # Step 4: Full analysis at optimal clustering
             print(f"\n{'=' * 60}")
             print(f"ANALYZING OPTIMAL CLUSTERING: {optimal_k} clusters")
-            print(f"Calinski-Harabasz Score: {optimal_result['calinski_harabasz']:.3f}")
+            print(f"Min Cluster Size: {optimal_result['min_cluster_size']}")
+            print(f"DBCV Score: {optimal_result['dbcv_score']:.3f}")
             print(f"Silhouette Score: {optimal_result['silhouette']:.3f}")
+            print(f"Noise Points: {optimal_result['n_noise']}")
             print(f"{'=' * 60}")
 
             # Analyze communities
@@ -545,8 +729,10 @@ class SubregisterAnalyzer:
             print("\n" + "=" * 60)
             print("ANALYSIS COMPLETE")
             print(f"Optimal clustering: {optimal_k} clusters")
-            print(f"Calinski-Harabasz score: {optimal_result['calinski_harabasz']:.3f}")
+            print(f"Min cluster size: {optimal_result['min_cluster_size']}")
+            print(f"DBCV score: {optimal_result['dbcv_score']:.3f}")
             print(f"Silhouette score: {optimal_result['silhouette']:.3f}")
+            print(f"Noise points: {optimal_result['n_noise']}")
             print(f"All results saved to: {self.output_dir}")
             print("=" * 60)
 
