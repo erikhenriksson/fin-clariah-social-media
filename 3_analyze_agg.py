@@ -9,7 +9,6 @@ import hdbscan
 import matplotlib.pyplot as plt
 import numpy as np
 import umap
-from sklearn.decomposition import PCA
 from sklearn.metrics import calinski_harabasz_score, silhouette_score
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -53,60 +52,24 @@ class UMAPSubregisterAnalyzer:
 
         print(f"Output will be saved to: {self.output_dir}")
 
-        # Normalize embeddings
+        # Normalize embeddings for cosine similarity
         self.embeddings_norm = self.embeddings / np.linalg.norm(
             self.embeddings, axis=1, keepdims=True
         )
 
-    def reduce_dimensions_pca(self, target_variance=0.80):
-        """Apply PCA for noise reduction, automatically selecting components for target variance"""
-        print("Applying PCA for dimensionality reduction...")
-
-        # First, fit PCA with all components to get variance ratios
-        pca_full = PCA(random_state=42)
-        pca_full.fit(self.embeddings_norm)
-
-        # Find minimum components needed for target variance
-        cumulative_variance = np.cumsum(pca_full.explained_variance_ratio_)
-        n_components = np.argmax(cumulative_variance >= target_variance) + 1
-
-        # Ensure we don't exceed the maximum possible components
-        max_components = min(self.embeddings_norm.shape)
-        n_components = min(n_components, max_components)
-
-        print(
-            f"Selected {n_components} components to achieve {target_variance:.1%} explained variance"
-        )
-
-        # Apply PCA with optimal number of components
-        self.pca = PCA(n_components=n_components, random_state=42)
-        self.embeddings_pca = self.pca.fit_transform(self.embeddings_norm)
-
-        # Normalize PCA embeddings
-        self.embeddings_pca_norm = self.embeddings_pca / np.linalg.norm(
-            self.embeddings_pca, axis=1, keepdims=True
-        )
-
-        actual_variance = self.pca.explained_variance_ratio_.sum()
-        print(
-            f"PCA total variance explained: {actual_variance:.3f} (using {n_components} components)"
-        )
-
-        return self.embeddings_pca_norm
-
-    def apply_umap_clustering(self, n_components=10, n_neighbors=None, min_dist=0.0):
+    def apply_umap_clustering(self, n_components=20, n_neighbors=None, min_dist=0.0):
         """Apply UMAP for manifold learning with parameters optimized for clustering"""
         print(f"Applying UMAP to reduce to {n_components} dimensions for clustering...")
 
-        # Auto-compute n_neighbors if not provided
+        # Auto-compute n_neighbors - larger for more conservative clustering
         if n_neighbors is None:
-            # Use larger n_neighbors for clustering as recommended
-            n_neighbors = min(int(np.sqrt(len(self.embeddings_pca_norm)) * 2), 100)
-            n_neighbors = max(30, n_neighbors)  # Minimum 30 for good manifold structure
+            # More conservative: larger neighborhoods for more global structure
+            n_neighbors = min(int(len(self.embeddings_norm) ** 0.4), 150)
+            n_neighbors = max(50, n_neighbors)  # Minimum 50 for stable manifold
 
         print(f"Using n_neighbors={n_neighbors}, min_dist={min_dist}")
 
-        # UMAP for clustering (higher dimensions)
+        # UMAP for clustering (20D)
         self.umap_cluster = umap.UMAP(
             n_components=n_components,
             n_neighbors=n_neighbors,
@@ -117,7 +80,7 @@ class UMAPSubregisterAnalyzer:
         )
 
         self.embeddings_umap_cluster = self.umap_cluster.fit_transform(
-            self.embeddings_pca_norm
+            self.embeddings_norm
         )
 
         print(f"UMAP clustering embedding shape: {self.embeddings_umap_cluster.shape}")
@@ -127,9 +90,9 @@ class UMAPSubregisterAnalyzer:
         """Apply UMAP for 2D visualization with different parameters"""
         print("Applying UMAP for 2D visualization...")
 
-        # Auto-compute n_neighbors for visualization (can be smaller)
+        # Smaller n_neighbors for visualization (preserves local structure)
         if n_neighbors is None:
-            n_neighbors = min(int(np.sqrt(len(self.embeddings_pca_norm))), 50)
+            n_neighbors = min(int(np.sqrt(len(self.embeddings_norm))), 50)
             n_neighbors = max(15, n_neighbors)
 
         print(f"Using n_neighbors={n_neighbors}, min_dist={min_dist} for visualization")
@@ -144,25 +107,30 @@ class UMAPSubregisterAnalyzer:
             low_memory=True,
         )
 
-        self.embeddings_umap_2d = self.umap_viz.fit_transform(self.embeddings_pca_norm)
+        self.embeddings_umap_2d = self.umap_viz.fit_transform(self.embeddings_norm)
 
         print(f"UMAP 2D visualization embedding shape: {self.embeddings_umap_2d.shape}")
         return self.embeddings_umap_2d
 
     def optimize_hdbscan_parameters(self):
-        """Optimize HDBSCAN parameters using grid search with Calinski-Harabasz Index"""
+        """Optimize HDBSCAN parameters - more conservative to reduce over-clustering"""
         print("\n" + "=" * 60)
-        print("OPTIMIZING HDBSCAN PARAMETERS")
+        print("OPTIMIZING HDBSCAN PARAMETERS (Conservative Settings)")
         print("=" * 60)
 
-        # Parameter grid for HDBSCAN
+        # More conservative parameter grid - larger clusters, fewer of them
         min_cluster_sizes = [
-            max(10, len(self.embeddings_umap_cluster) // 200),
-            max(20, len(self.embeddings_umap_cluster) // 100),
-            max(50, len(self.embeddings_umap_cluster) // 50),
+            max(50, len(self.embeddings_umap_cluster) // 50),  # Larger minimum
+            max(100, len(self.embeddings_umap_cluster) // 25),  # Even larger
+            max(200, len(self.embeddings_umap_cluster) // 15),  # Very conservative
         ]
 
-        min_samples_list = [5, 10, 15, 20]
+        min_samples_list = [
+            10,
+            20,
+            30,
+            50,
+        ]  # Higher minimum samples = more conservative
 
         best_score = -1
         best_params = None
@@ -172,24 +140,31 @@ class UMAPSubregisterAnalyzer:
         print(
             f"Testing {len(min_cluster_sizes)} × {len(min_samples_list)} parameter combinations..."
         )
-        print("Parameters tested: min_cluster_size × min_samples")
+        print("Conservative parameters to reduce over-clustering")
+        print(
+            "min_cluster_size | min_samples | CH_Score | Clusters | Noise | Clustered%"
+        )
+        print("-" * 75)
 
         for min_cluster_size in min_cluster_sizes:
             for min_samples in min_samples_list:
                 try:
-                    # Fit HDBSCAN
+                    # Fit HDBSCAN with conservative parameters
                     clusterer = hdbscan.HDBSCAN(
                         min_cluster_size=min_cluster_size,
                         min_samples=min_samples,
                         metric="euclidean",
-                        cluster_selection_method="eom",
+                        cluster_selection_method="eom",  # Can try 'leaf' for even more conservative
+                        cluster_selection_epsilon=0.0,  # Conservative merging
                     )
 
                     cluster_labels = clusterer.fit_predict(self.embeddings_umap_cluster)
 
-                    # Filter out noise points for scoring
+                    # Calculate metrics
                     mask = cluster_labels != -1
-                    if np.sum(mask) < 2 or len(np.unique(cluster_labels[mask])) < 2:
+                    clustered_ratio = np.sum(mask) / len(cluster_labels)
+
+                    if np.sum(mask) < 10 or len(np.unique(cluster_labels[mask])) < 2:
                         score = -1
                         n_clusters = 0
                         n_noise = len(cluster_labels)
@@ -207,43 +182,70 @@ class UMAPSubregisterAnalyzer:
                             "calinski_harabasz": score,
                             "n_clusters": n_clusters,
                             "n_noise": n_noise,
+                            "clustered_ratio": clustered_ratio,
                             "labels": cluster_labels,
                         }
                     )
 
                     print(
-                        f"  {min_cluster_size:3d} × {min_samples:2d}: "
-                        f"CH={score:6.1f}, clusters={n_clusters:2d}, noise={n_noise:4d}"
+                        f"      {min_cluster_size:3d}        |     {min_samples:2d}      | "
+                        f"{score:6.1f}   |    {n_clusters:2d}    | {n_noise:4d}  |  {clustered_ratio:5.1%}"
                     )
 
-                    if score > best_score:
-                        best_score = score
-                        best_params = {
-                            "min_cluster_size": min_cluster_size,
-                            "min_samples": min_samples,
-                        }
-                        best_labels = cluster_labels.copy()
+                    # Prefer solutions with reasonable cluster counts (2-4) and good clustering ratio
+                    if score > 0 and 2 <= n_clusters <= 4 and clustered_ratio > 0.7:
+                        # Bonus for having fewer clusters
+                        adjusted_score = score * (5 - n_clusters) * clustered_ratio
+                        if adjusted_score > best_score:
+                            best_score = adjusted_score
+                            best_params = {
+                                "min_cluster_size": min_cluster_size,
+                                "min_samples": min_samples,
+                            }
+                            best_labels = cluster_labels.copy()
 
                 except Exception as e:
-                    print(f"  {min_cluster_size:3d} × {min_samples:2d}: Error - {e}")
+                    print(
+                        f"      {min_cluster_size:3d}        |     {min_samples:2d}      | Error - {e}"
+                    )
                     continue
 
         if best_params is None:
-            raise ValueError("No valid HDBSCAN clustering found!")
+            # Fallback: pick the solution with best CH score regardless of cluster count
+            valid_results = [
+                r for r in optimization_results if r["calinski_harabasz"] > 0
+            ]
+            if valid_results:
+                best_result = max(valid_results, key=lambda x: x["calinski_harabasz"])
+                best_params = {
+                    "min_cluster_size": best_result["min_cluster_size"],
+                    "min_samples": best_result["min_samples"],
+                }
+                best_labels = best_result["labels"]
+                best_score = best_result["calinski_harabasz"]
+                print("\n⚠ Using fallback: highest CH score solution")
+            else:
+                raise ValueError("No valid HDBSCAN clustering found!")
+
+        actual_clusters = len(np.unique(best_labels[best_labels != -1]))
+        actual_noise = np.sum(best_labels == -1)
 
         print(f"\n✓ OPTIMAL PARAMETERS:")
         print(f"  min_cluster_size: {best_params['min_cluster_size']}")
         print(f"  min_samples: {best_params['min_samples']}")
-        print(f"  Calinski-Harabasz Score: {best_score:.3f}")
-        print(f"  Number of clusters: {len(np.unique(best_labels[best_labels != -1]))}")
-        print(f"  Noise points: {np.sum(best_labels == -1)}")
+        print(f"  Number of clusters: {actual_clusters}")
+        print(f"  Noise points: {actual_noise}")
+        print(
+            f"  Clustered ratio: {(len(best_labels) - actual_noise) / len(best_labels):.1%}"
+        )
 
         # Save optimization results
         optimization_file = self.output_dir / "hdbscan_optimization.txt"
         with open(optimization_file, "w", encoding="utf-8") as f:
             f.write("HDBSCAN PARAMETER OPTIMIZATION RESULTS\n")
             f.write("=" * 50 + "\n\n")
-            f.write(f"Optimization Metric: Calinski-Harabasz Index\n")
+            f.write(f"Strategy: Conservative clustering to avoid over-segmentation\n")
+            f.write(f"Preference: 2-4 clusters with >70% data clustered\n")
             f.write(f"Dataset Size: {len(self.embeddings_umap_cluster)} documents\n")
             f.write(
                 f"UMAP Clustering Dimensions: {self.embeddings_umap_cluster.shape[1]}\n\n"
@@ -251,34 +253,37 @@ class UMAPSubregisterAnalyzer:
             f.write(f"OPTIMAL PARAMETERS:\n")
             f.write(f"  min_cluster_size: {best_params['min_cluster_size']}\n")
             f.write(f"  min_samples: {best_params['min_samples']}\n")
-            f.write(f"  Calinski-Harabasz Score: {best_score:.3f}\n")
+            f.write(f"  Number of clusters: {actual_clusters}\n")
+            f.write(f"  Noise points: {actual_noise}\n")
             f.write(
-                f"  Number of clusters: {len(np.unique(best_labels[best_labels != -1]))}\n"
+                f"  Clustered ratio: {(len(best_labels) - actual_noise) / len(best_labels):.1%}\n\n"
             )
-            f.write(f"  Noise points: {np.sum(best_labels == -1)}\n\n")
 
             f.write("All Parameter Combinations Tested:\n")
-            f.write("min_cluster_size | min_samples | CH_Score | Clusters | Noise\n")
-            f.write("-" * 60 + "\n")
+            f.write(
+                "min_cluster_size | min_samples | CH_Score | Clusters | Noise | Clustered%\n"
+            )
+            f.write("-" * 70 + "\n")
             for result in optimization_results:
                 f.write(
                     f"      {result['min_cluster_size']:3d}        |     {result['min_samples']:2d}      | "
-                    f"{result['calinski_harabasz']:6.1f}   |    {result['n_clusters']:2d}    | {result['n_noise']:4d}\n"
+                    f"{result['calinski_harabasz']:6.1f}   |    {result['n_clusters']:2d}    | "
+                    f"{result['n_noise']:4d}  |   {result['clustered_ratio']:5.1%}\n"
                 )
 
         print(f"\nOptimization results saved to: {optimization_file}")
-        return best_params, best_labels, best_score
+        return best_params, best_labels
 
     def compute_cluster_metrics(self, cluster_labels):
         """Compute comprehensive cluster quality metrics"""
         mask = cluster_labels != -1
 
-        if np.sum(mask) < 2:
+        if np.sum(mask) < 10:
             return {}
 
         metrics = {}
 
-        # Calinski-Harabasz Index (higher is better)
+        # Calinski-Harabasz Index (primary metric)
         metrics["calinski_harabasz"] = calinski_harabasz_score(
             self.embeddings_umap_cluster[mask], cluster_labels[mask]
         )
@@ -295,6 +300,7 @@ class UMAPSubregisterAnalyzer:
         metrics["n_clusters"] = len(np.unique(cluster_labels[mask]))
         metrics["n_noise"] = np.sum(cluster_labels == -1)
         metrics["noise_ratio"] = metrics["n_noise"] / len(cluster_labels)
+        metrics["clustered_ratio"] = np.sum(mask) / len(cluster_labels)
 
         return metrics
 
@@ -317,7 +323,7 @@ class UMAPSubregisterAnalyzer:
         with open(analysis_file, "w", encoding="utf-8") as f:
             f.write(analysis_text)
 
-            # Analyze noise points first
+            # Analyze noise points first if they exist
             noise_count = np.sum(cluster_labels == -1)
             if noise_count > 0:
                 noise_section = f"\n--- NOISE POINTS ({noise_count} documents) ---\n"
@@ -382,9 +388,11 @@ class UMAPSubregisterAnalyzer:
         return coherence_scores
 
     def compute_coherence_for_clusters(self, cluster_labels):
-        """Compute coherence scores for clusters (memory-efficient)"""
+        """Compute coherence scores for clusters using UMAP embeddings"""
         coherence_scores = {}
         unique_clusters = [c for c in np.unique(cluster_labels) if c != -1]
+
+        print("Computing cluster coherence scores...")
 
         for cluster_id in unique_clusters:
             members = np.where(cluster_labels == cluster_id)[0]
@@ -393,7 +401,7 @@ class UMAPSubregisterAnalyzer:
                 coherence_scores[cluster_id] = 0.0
                 continue
 
-            # Memory-efficient coherence computation
+            # Use UMAP embeddings for coherence computation
             if len(members) > 500:
                 sample_size = min(300, len(members))
                 sample_members = np.random.choice(members, sample_size, replace=False)
@@ -426,8 +434,8 @@ class UMAPSubregisterAnalyzer:
                     self.embeddings_umap_2d[noise_mask, 0],
                     self.embeddings_umap_2d[noise_mask, 1],
                     c="lightgray",
-                    alpha=0.3,
-                    s=4,
+                    alpha=0.4,
+                    s=6,
                     label=f"Noise ({np.sum(noise_mask)} points)",
                 )
 
@@ -439,11 +447,10 @@ class UMAPSubregisterAnalyzer:
                     self.embeddings_umap_2d[cluster_mask, 0],
                     self.embeddings_umap_2d[cluster_mask, 1],
                     c=cluster_labels[cluster_mask],
-                    cmap="tab10",
-                    alpha=0.7,
-                    s=8,
+                    cmap="Set1",  # Better colors for fewer clusters
+                    alpha=0.8,
+                    s=12,
                 )
-                plt.colorbar(scatter, label="Cluster ID")
 
                 # Add cluster labels at centroids
                 for cluster_id in unique_clusters:
@@ -455,29 +462,30 @@ class UMAPSubregisterAnalyzer:
                         plt.annotate(
                             f"C{cluster_id}",
                             (centroid_x, centroid_y),
-                            fontsize=12,
+                            fontsize=14,
                             fontweight="bold",
                             ha="center",
                             va="center",
                             bbox=dict(
-                                boxstyle="round,pad=0.3",
+                                boxstyle="round,pad=0.4",
                                 facecolor="white",
                                 edgecolor="black",
-                                alpha=0.8,
+                                alpha=0.9,
                             ),
                         )
 
             n_clusters = len([c for c in np.unique(cluster_labels) if c != -1])
             n_noise = np.sum(cluster_labels == -1)
+            clustered_pct = (len(cluster_labels) - n_noise) / len(cluster_labels) * 100
 
             plt.title(
-                f"UMAP 2D Visualization\n{n_clusters} Clusters, {n_noise} Noise Points"
+                f"UMAP 2D Visualization\n{n_clusters} Clusters, {n_noise} Noise Points ({clustered_pct:.1f}% Clustered)"
             )
-            plt.xlabel("UMAP 1")
-            plt.ylabel("UMAP 2")
+            plt.xlabel("UMAP Dimension 1")
+            plt.ylabel("UMAP Dimension 2")
 
             if noise_mask.any():
-                plt.legend()
+                plt.legend(loc="upper right")
 
             # Save plot
             plot_path = self.output_dir / "umap_cluster_visualization.png"
@@ -502,9 +510,16 @@ class UMAPSubregisterAnalyzer:
             f.write("=" * 50 + "\n\n")
             f.write(f"Dataset: {os.path.basename(self.pickle_path)}\n")
             f.write(f"Total documents: {len(cluster_labels)}\n")
+            f.write(f"Original embedding dimensions: {self.embeddings.shape[1]}\n")
             f.write(
                 f"UMAP clustering dimensions: {self.embeddings_umap_cluster.shape[1]}\n\n"
             )
+
+            f.write("UMAP Parameters:\n")
+            f.write(f"  n_components: {self.embeddings_umap_cluster.shape[1]}\n")
+            f.write(f"  n_neighbors: {self.umap_cluster.n_neighbors}\n")
+            f.write(f"  min_dist: {self.umap_cluster.min_dist}\n")
+            f.write(f"  metric: {self.umap_cluster.metric}\n\n")
 
             f.write("HDBSCAN Parameters:\n")
             f.write(f"  min_cluster_size: {best_params['min_cluster_size']}\n")
@@ -513,7 +528,8 @@ class UMAPSubregisterAnalyzer:
             f.write("Clustering Results:\n")
             f.write(f"  Number of clusters: {metrics['n_clusters']}\n")
             f.write(f"  Noise points: {metrics['n_noise']}\n")
-            f.write(f"  Noise ratio: {metrics['noise_ratio']:.3f}\n\n")
+            f.write(f"  Noise ratio: {metrics['noise_ratio']:.3f}\n")
+            f.write(f"  Clustered ratio: {metrics['clustered_ratio']:.3f}\n\n")
 
             f.write("Quality Metrics:\n")
             f.write(f"  Calinski-Harabasz Index: {metrics['calinski_harabasz']:.3f}\n")
@@ -525,6 +541,10 @@ class UMAPSubregisterAnalyzer:
             f.write("    > 100: Good cluster separation\n")
             f.write("    > 50: Moderate cluster separation\n")
             f.write("    < 50: Poor cluster separation\n\n")
+            f.write("  Conservative clustering prioritizes:\n")
+            f.write("    - Fewer, more stable clusters (2-4 preferred)\n")
+            f.write("    - High proportion of data successfully clustered\n")
+            f.write("    - Strong intra-cluster coherence\n")
 
         print(f"Clustering metrics saved to: {metrics_file}")
 
@@ -532,32 +552,31 @@ class UMAPSubregisterAnalyzer:
         """Run the complete UMAP-based subregister discovery pipeline"""
         try:
             print("=" * 80)
-            print("UMAP-BASED SUBREGISTER DISCOVERY ANALYSIS")
-            print("Pipeline: PCA → UMAP (10D) → HDBSCAN → 2D Visualization")
+            print("SIMPLIFIED UMAP-BASED SUBREGISTER DISCOVERY")
+            print(
+                "Pipeline: Direct UMAP (20D) → Conservative HDBSCAN → 2D Visualization"
+            )
             print("=" * 80)
 
-            # Step 1: PCA for dimensionality reduction
-            self.reduce_dimensions_pca(target_variance=0.80)
+            # Step 1: UMAP for clustering (20D) - directly on normalized embeddings
+            self.apply_umap_clustering(n_components=20)
 
-            # Step 2: UMAP for clustering (10D)
-            self.apply_umap_clustering(n_components=10)
-
-            # Step 3: UMAP for visualization (2D)
+            # Step 2: UMAP for visualization (2D)
             self.apply_umap_visualization()
 
-            # Step 4: Optimize HDBSCAN parameters
-            best_params, best_labels, best_score = self.optimize_hdbscan_parameters()
+            # Step 3: Optimize HDBSCAN parameters (conservative)
+            best_params, best_labels = self.optimize_hdbscan_parameters()
 
-            # Step 5: Compute comprehensive metrics
+            # Step 4: Compute comprehensive metrics
             metrics = self.compute_cluster_metrics(best_labels)
 
-            # Step 6: Analyze clusters
+            # Step 5: Analyze clusters
             coherence_scores = self.analyze_clusters(best_labels)
 
-            # Step 7: Save metrics
+            # Step 6: Save metrics
             self.save_cluster_metrics(best_labels, metrics, best_params)
 
-            # Step 8: Create visualization
+            # Step 7: Create visualization
             self.visualize_clusters(best_labels)
 
             # Final summary
@@ -565,6 +584,7 @@ class UMAPSubregisterAnalyzer:
             print("ANALYSIS COMPLETE")
             print(f"Number of clusters found: {metrics['n_clusters']}")
             print(f"Noise points: {metrics['n_noise']} ({metrics['noise_ratio']:.1%})")
+            print(f"Successfully clustered: {metrics['clustered_ratio']:.1%}")
             print(f"Calinski-Harabasz Index: {metrics['calinski_harabasz']:.3f}")
             print(f"Silhouette Score: {metrics['silhouette']:.3f}")
             print(f"All results saved to: {self.output_dir}")
@@ -600,7 +620,7 @@ if __name__ == "__main__":
         print(f"{i}. {os.path.basename(file)}")
 
     print(f"\nAll results will be saved to: {results_dir}/")
-    print("Method: UMAP-based clustering with HDBSCAN")
+    print("Method: Direct UMAP → Conservative HDBSCAN")
 
     print("\n" + "=" * 80)
     print("PROCESSING ALL PKL FILES")
@@ -669,4 +689,4 @@ if __name__ == "__main__":
         print("All eligible files processed successfully! ✓")
 
     print(f"\nResults organized in: {results_dir}/")
-    print("Analysis completed with UMAP-HDBSCAN pipeline.")
+    print("Analysis completed with simplified UMAP→HDBSCAN pipeline.")
