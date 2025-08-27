@@ -60,18 +60,11 @@ class UMAPHDBSCANAnalyzer:
         """Apply UMAP for manifold learning"""
         print(f"Applying UMAP to reduce to {n_components} dimensions...")
 
-        # Conservative n_neighbors for stable manifold structure
-        n_neighbors = min(int(len(self.embeddings_norm) ** 0.5), 100)
-        n_neighbors = max(30, n_neighbors)
-
-        print(f"Using n_neighbors={n_neighbors}")
-
         # UMAP for clustering
         self.umap_cluster = umap.UMAP(
             n_components=n_components,
-            n_neighbors=n_neighbors,
+            n_neighbors=30,
             min_dist=0.0,
-            metric="cosine",
             random_state=42,
         )
 
@@ -80,9 +73,8 @@ class UMAPHDBSCANAnalyzer:
         # UMAP for 2D visualization
         self.umap_viz = umap.UMAP(
             n_components=2,
-            n_neighbors=30,
+            n_neighbors=15,
             min_dist=0.1,
-            metric="cosine",
             random_state=42,
         )
 
@@ -91,121 +83,48 @@ class UMAPHDBSCANAnalyzer:
         print(f"UMAP embedding shape: {self.embeddings_umap.shape}")
         return self.embeddings_umap
 
-    def find_optimal_hdbscan(self):
-        """Find optimal HDBSCAN parameters using cluster stability"""
+    def apply_hdbscan_clustering(self):
+        """Apply HDBSCAN with simple fixed parameters that favor large clusters"""
         print("\n" + "=" * 60)
-        print("FINDING OPTIMAL HDBSCAN PARAMETERS")
+        print("APPLYING HDBSCAN CLUSTERING")
         print("=" * 60)
 
-        # Simple parameter ranges based on dataset size
         n_docs = len(self.embeddings_umap)
 
-        # min_cluster_size: 1% to 5% of dataset, minimum 50
-        min_cluster_sizes = [
-            max(50, int(n_docs * 0.01)),  # 1%
-            max(100, int(n_docs * 0.02)),  # 2%
-            max(150, int(n_docs * 0.03)),  # 3%
-        ]
+        # Simple fixed parameters
+        min_cluster_size = max(50, n_docs // 50)  # 2% of dataset, minimum 50
+        min_samples = 30  # Fixed high value - only dense regions become clusters
 
-        # min_samples: half of min_cluster_size (standard rule of thumb)
-        min_samples_values = [max(5, mcs // 2) for mcs in min_cluster_sizes]
+        print(f"Dataset size: {n_docs}")
+        print(f"min_cluster_size: {min_cluster_size}")
+        print(f"min_samples: {min_samples} (fixed - favors large dense clusters)")
 
-        best_clusterer = None
-        best_score = -1
-        best_params = None
-        results = []
+        # Fit HDBSCAN
+        clusterer = hdbscan.HDBSCAN(
+            min_cluster_size=min_cluster_size,
+            min_samples=min_samples,
+            metric="euclidean",
+            cluster_selection_method="eom",
+        )
 
-        print("min_cluster_size | min_samples | n_clusters | stability | CH_score")
-        print("-" * 65)
+        cluster_labels = clusterer.fit_predict(self.embeddings_umap)
 
-        for mcs, ms in zip(min_cluster_sizes, min_samples_values):
-            try:
-                # Fit HDBSCAN
-                clusterer = hdbscan.HDBSCAN(
-                    min_cluster_size=mcs,
-                    min_samples=ms,
-                    metric="euclidean",
-                    cluster_selection_method="eom",
-                )
+        # Report results
+        n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
+        n_noise = np.sum(cluster_labels == -1)
 
-                cluster_labels = clusterer.fit_predict(self.embeddings_umap)
-
-                # Count non-noise clusters
-                n_clusters = len(set(cluster_labels)) - (
-                    1 if -1 in cluster_labels else 0
-                )
-
-                # Only evaluate if we have clusters
-                if n_clusters > 0:
-                    # Use HDBSCAN's built-in cluster stability scores
-                    cluster_persistence = clusterer.cluster_persistence_
-                    avg_stability = (
-                        np.mean(cluster_persistence)
-                        if len(cluster_persistence) > 0
-                        else 0
-                    )
-
-                    # Compute external validation
-                    mask = cluster_labels != -1
-                    if np.sum(mask) > 10 and n_clusters > 1:
-                        ch_score = calinski_harabasz_score(
-                            self.embeddings_umap[mask], cluster_labels[mask]
-                        )
-                    else:
-                        ch_score = 0
-
-                    # Combined score: stability + cluster quality
-                    combined_score = avg_stability * np.log(ch_score + 1)
-
-                    results.append(
-                        {
-                            "min_cluster_size": mcs,
-                            "min_samples": ms,
-                            "clusterer": clusterer,
-                            "labels": cluster_labels,
-                            "n_clusters": n_clusters,
-                            "stability": avg_stability,
-                            "ch_score": ch_score,
-                            "combined_score": combined_score,
-                        }
-                    )
-
-                    print(
-                        f"      {mcs:3d}        |     {ms:2d}      |     {n_clusters:2d}     |  {avg_stability:6.3f}   |  {ch_score:6.1f}"
-                    )
-
-                    if combined_score > best_score:
-                        best_score = combined_score
-                        best_clusterer = clusterer
-                        best_params = {"min_cluster_size": mcs, "min_samples": ms}
-
-                else:
-                    print(
-                        f"      {mcs:3d}        |     {ms:2d}      |      0     |   0.000   |    0.0"
-                    )
-
-            except Exception as e:
-                print(f"      {mcs:3d}        |     {ms:2d}      | Error: {e}")
-                continue
-
-        if best_clusterer is None:
-            raise ValueError("No valid HDBSCAN clustering found!")
-
-        # Get final labels
-        best_labels = best_clusterer.fit_predict(self.embeddings_umap)
-        n_clusters = len(set(best_labels)) - (1 if -1 in best_labels else 0)
-        n_noise = np.sum(best_labels == -1)
-
-        print(f"\n✓ OPTIMAL PARAMETERS:")
-        print(f"  min_cluster_size: {best_params['min_cluster_size']}")
-        print(f"  min_samples: {best_params['min_samples']}")
+        print(f"\nClustering Results:")
         print(f"  Number of clusters: {n_clusters}")
         print(f"  Noise points: {n_noise}")
         print(
-            f"  Clustered: {len(best_labels) - n_noise} ({(len(best_labels) - n_noise) / len(best_labels) * 100:.1f}%)"
+            f"  Clustered: {n_docs - n_noise} ({(n_docs - n_noise) / n_docs * 100:.1f}%)"
         )
 
-        return best_clusterer, best_labels, best_params
+        if n_clusters > 0:
+            avg_stability = np.mean(clusterer.cluster_persistence_)
+            print(f"  Average cluster stability: {avg_stability:.3f}")
+
+        return clusterer, cluster_labels
 
     def analyze_clusters(self, cluster_labels, top_n=10):
         """Analyze cluster contents"""
@@ -394,12 +313,14 @@ class UMAPHDBSCANAnalyzer:
             plt.close("all")
             return None
 
-    def save_results(self, cluster_labels, clusterer, best_params):
+    def save_results(self, cluster_labels, clusterer):
         """Save comprehensive results"""
         results_file = self.output_dir / "clustering_results.txt"
 
+        n_docs = len(cluster_labels)
         n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
         n_noise = np.sum(cluster_labels == -1)
+        min_cluster_size = max(50, n_docs // 50)
 
         # Compute final metrics
         mask = cluster_labels != -1
@@ -417,34 +338,32 @@ class UMAPHDBSCANAnalyzer:
             f.write("HDBSCAN CLUSTERING RESULTS\n")
             f.write("=" * 50 + "\n\n")
             f.write(f"Dataset: {os.path.basename(self.pickle_path)}\n")
-            f.write(f"Total documents: {len(cluster_labels)}\n")
+            f.write(f"Total documents: {n_docs}\n")
             f.write(f"Original embedding dimensions: {self.embeddings.shape[1]}\n")
             f.write(f"UMAP dimensions: {self.embeddings_umap.shape[1]}\n\n")
 
             f.write("HDBSCAN Parameters:\n")
-            f.write(f"  min_cluster_size: {best_params['min_cluster_size']}\n")
-            f.write(f"  min_samples: {best_params['min_samples']}\n\n")
+            f.write(f"  min_cluster_size: {min_cluster_size} (2% of dataset)\n")
+            f.write(f"  min_samples: 30 (fixed - favors large dense clusters)\n\n")
 
             f.write("Clustering Results:\n")
             f.write(f"  Number of clusters: {n_clusters}\n")
             f.write(f"  Noise points: {n_noise}\n")
-            f.write(f"  Clustered documents: {len(cluster_labels) - n_noise}\n")
-            f.write(
-                f"  Clustering rate: {(len(cluster_labels) - n_noise) / len(cluster_labels) * 100:.1f}%\n\n"
-            )
+            f.write(f"  Clustered documents: {n_docs - n_noise}\n")
+            f.write(f"  Clustering rate: {(n_docs - n_noise) / n_docs * 100:.1f}%\n\n")
 
             f.write("Quality Metrics:\n")
             f.write(f"  Calinski-Harabasz Index: {ch_score:.1f}\n")
             f.write(f"  Silhouette Score: {sil_score:.3f}\n")
-            f.write(
-                f"  Cluster Stability: {np.mean(clusterer.cluster_persistence_):.3f}\n\n"
-            )
+            if n_clusters > 0:
+                f.write(
+                    f"  Average cluster stability: {np.mean(clusterer.cluster_persistence_):.3f}\n\n"
+                )
 
             f.write("Method Summary:\n")
             f.write("- UMAP for manifold learning (cosine similarity)\n")
-            f.write("- HDBSCAN for density-based clustering\n")
-            f.write("- Parameter selection via cluster stability\n")
-            f.write("- Natural emergence of cluster structure\n")
+            f.write("- HDBSCAN with fixed conservative parameters\n")
+            f.write("- Natural emergence of density-based clusters\n")
 
         print(f"Results saved to: {results_file}")
 
@@ -457,10 +376,10 @@ class UMAPHDBSCANAnalyzer:
             print("=" * 80)
 
             # Step 1: Apply UMAP
-            self.apply_umap(n_components=20)
+            self.apply_umap(n_components=15)
 
-            # Step 2: Find optimal HDBSCAN parameters
-            clusterer, cluster_labels, best_params = self.find_optimal_hdbscan()
+            # Step 2: Apply HDBSCAN clustering
+            clusterer, cluster_labels = self.apply_hdbscan_clustering()
 
             # Step 3: Analyze clusters
             cluster_stats = self.analyze_clusters(cluster_labels)
@@ -469,7 +388,7 @@ class UMAPHDBSCANAnalyzer:
             self.visualize_clusters(cluster_labels)
 
             # Step 5: Save results
-            self.save_results(cluster_labels, clusterer, best_params)
+            self.save_results(cluster_labels, clusterer)
 
             # Final summary
             n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
