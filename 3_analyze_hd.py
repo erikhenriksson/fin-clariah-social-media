@@ -60,11 +60,18 @@ class UMAPHDBSCANAnalyzer:
         """Apply UMAP for manifold learning"""
         print(f"Applying UMAP to reduce to {n_components} dimensions...")
 
+        # Conservative n_neighbors for stable manifold structure
+        n_neighbors = min(int(len(self.embeddings_norm) ** 0.5), 100)
+        n_neighbors = max(30, n_neighbors)
+
+        print(f"Using n_neighbors={n_neighbors}")
+
         # UMAP for clustering
         self.umap_cluster = umap.UMAP(
             n_components=n_components,
-            n_neighbors=30,
+            n_neighbors=n_neighbors,
             min_dist=0.0,
+            metric="cosine",
             random_state=42,
         )
 
@@ -73,8 +80,9 @@ class UMAPHDBSCANAnalyzer:
         # UMAP for 2D visualization
         self.umap_viz = umap.UMAP(
             n_components=2,
-            n_neighbors=15,
+            n_neighbors=30,
             min_dist=0.1,
+            metric="cosine",
             random_state=42,
         )
 
@@ -84,25 +92,27 @@ class UMAPHDBSCANAnalyzer:
         return self.embeddings_umap
 
     def apply_hdbscan_clustering(self):
-        """Apply HDBSCAN with simple fixed parameters that favor large clusters"""
+        """Apply HDBSCAN with simple fixed parameters that balance coverage and quality"""
         print("\n" + "=" * 60)
         print("APPLYING HDBSCAN CLUSTERING")
         print("=" * 60)
 
         n_docs = len(self.embeddings_umap)
 
-        # Simple fixed parameters
-        min_cluster_size = max(50, n_docs // 10)  # 10% of dataset, minimum 50
-        min_samples = 30  # Fixed high value - only dense regions become clusters
+        # Simple fixed parameters - much more liberal
+        min_cluster_size = max(50, n_docs // 100)  # 1% of dataset, minimum 50
+        min_samples = 10  # Much lower - allows more points to be clustered
 
         print(f"Dataset size: {n_docs}")
         print(f"min_cluster_size: {min_cluster_size}")
-        print(f"min_samples: {min_samples} (fixed - favors large dense clusters)")
+        print(f"min_samples: {min_samples} (liberal - captures more structure)")
 
         # Fit HDBSCAN
         clusterer = hdbscan.HDBSCAN(
             min_cluster_size=min_cluster_size,
             min_samples=min_samples,
+            metric="euclidean",
+            cluster_selection_method="eom",
         )
 
         cluster_labels = clusterer.fit_predict(self.embeddings_umap)
@@ -341,8 +351,8 @@ class UMAPHDBSCANAnalyzer:
             f.write(f"UMAP dimensions: {self.embeddings_umap.shape[1]}\n\n")
 
             f.write("HDBSCAN Parameters:\n")
-            f.write(f"  min_cluster_size: {min_cluster_size} (2% of dataset)\n")
-            f.write(f"  min_samples: 30 (fixed - favors large dense clusters)\n\n")
+            f.write(f"  min_cluster_size: {min_cluster_size} (1% of dataset)\n")
+            f.write(f"  min_samples: 10 (liberal - captures more structure)\n\n")
 
             f.write("Clustering Results:\n")
             f.write(f"  Number of clusters: {n_clusters}\n")
@@ -374,7 +384,7 @@ class UMAPHDBSCANAnalyzer:
             print("=" * 80)
 
             # Step 1: Apply UMAP
-            self.apply_umap(n_components=15)
+            self.apply_umap(n_components=20)
 
             # Step 2: Apply HDBSCAN clustering
             clusterer, cluster_labels = self.apply_hdbscan_clustering()
