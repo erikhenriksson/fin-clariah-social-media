@@ -55,7 +55,7 @@ class HDBSCANSubregisterAnalyzer:
         print(f"Output will be saved to: {self.output_dir}")
 
         # Normalize embeddings once for cosine distance
-        self.embeddings_norm = normalize(self.embeddings, norm="l2").astype(np.float64)
+        # self.embeddings_norm = normalize(self.embeddings, norm="l2").astype(np.float64)
 
     def reduce_dimensions_umap(self):
         """Apply UMAP for dimensionality reduction - create both clustering and visualization embeddings"""
@@ -70,7 +70,7 @@ class HDBSCANSubregisterAnalyzer:
             n_components=15,
             n_neighbors=n_neighbors,
             min_dist=0.0,
-            metric="cosine",
+            # metric="cosine",
             random_state=42,
             low_memory=True,
         )
@@ -86,7 +86,7 @@ class HDBSCANSubregisterAnalyzer:
             n_components=2,
             n_neighbors=n_neighbors,
             min_dist=0.1,
-            metric="cosine",
+            # metric="cosine",
             random_state=42,
             low_memory=True,
         )
@@ -126,7 +126,7 @@ class HDBSCANSubregisterAnalyzer:
             clusterer = HDBSCAN(
                 min_cluster_size=min_size,
                 min_samples=max(3, min_size // 5),
-                metric="cosine",
+                # metric="cosine",
                 cluster_selection_epsilon=0.0,
                 cluster_selection_method="eom",
                 random_state=42,
@@ -147,7 +147,7 @@ class HDBSCANSubregisterAnalyzer:
                     sil_score = silhouette_score(
                         self.embeddings_clustering[non_noise_mask],
                         cluster_labels[non_noise_mask],
-                        metric="cosine",
+                        # metric="cosine",
                     )
                 else:
                     sil_score = -1
@@ -284,7 +284,8 @@ class HDBSCANSubregisterAnalyzer:
 
         # Compute silhouette score for final clustering
         sil_score = silhouette_score(
-            self.embeddings_clustering, labels, metric="cosine"
+            self.embeddings_clustering,
+            labels,  # metric="cosine"
         )
 
         analysis_text = f"\n=== HDBSCAN COMMUNITY ANALYSIS ({n_clusters} clusters, Silhouette={sil_score:.3f}) ===\n"
