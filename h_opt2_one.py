@@ -186,22 +186,22 @@ def merge_low_quality_clusters(embeddings, labels, cluster_silhouettes, threshol
 def save_clustered_data(original_data, labels, pickle_path):
     """Save the original data with cluster labels added"""
     print("Saving clustered data...")
-    
+
     # Add cluster labels to each document
     clustered_data = []
     for i, row in enumerate(original_data):
         new_row = row.copy()
-        new_row['cluster_label'] = int(labels[i])
+        new_row["cluster_label"] = int(labels[i])
         clustered_data.append(new_row)
-    
+
     # Create output filename with _clustered suffix
     input_path = Path(pickle_path)
     output_path = input_path.parent / (input_path.stem + "_clustered.pkl")
-    
+
     # Save the clustered data
     with open(output_path, "wb") as f:
         pickle.dump(clustered_data, f)
-    
+
     print(f"Clustered data saved to {output_path}")
     return output_path
 
@@ -358,23 +358,25 @@ def process_file(pickle_path, results_dir="hdbscan_results"):
 
 def main():
     """Process a single specified pickle file"""
-    parser = argparse.ArgumentParser(description='Process a single pickle file with HDBSCAN clustering')
-    parser.add_argument('pickle_file', help='Path to the pickle file to process')
-    
+    parser = argparse.ArgumentParser(
+        description="Process a single pickle file with HDBSCAN clustering"
+    )
+    parser.add_argument("pickle_file", help="Path to the pickle file to process")
+
     args = parser.parse_args()
-    
+
     pickle_path = args.pickle_file
-    
+
     if not os.path.exists(pickle_path):
         print(f"Error: File {pickle_path} does not exist")
         return
-    
-    if not pickle_path.endswith('.pkl'):
+
+    if not pickle_path.endswith(".pkl"):
         print(f"Warning: File {pickle_path} does not have .pkl extension")
-    
+
     print(f"Processing file: {pickle_path}")
 
-    results_dir = f"hdbscan_results_c{UMAP_COMPONENTS}"
+    results_dir = f"hdbscan_results_c{UMAP_COMPONENTS}_one"
     Path(results_dir).mkdir(exist_ok=True)
 
     if process_file(pickle_path, results_dir):
