@@ -37,7 +37,7 @@ def reduce_dimensions(embeddings):
 
     n_neighbors = min(30, len(embeddings) // 30)
 
-    reducer = umap.UMAP(n_components=15, n_neighbors=n_neighbors, min_dist=0.0)
+    reducer = umap.UMAP(n_components=50, n_neighbors=n_neighbors, min_dist=0.0)
 
     reduced_embeddings = reducer.fit_transform(embeddings)
     print(f"Reduced to {reduced_embeddings.shape[1]}D")
