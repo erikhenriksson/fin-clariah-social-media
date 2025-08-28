@@ -167,7 +167,7 @@ class HDBSCANSubregisterAnalyzer:
             "silhouette": sil_score,
         }
 
-        return min_size, result
+        return min_size, result, {min_size: result}
 
     def handle_noise_points(self, labels):
         """Assign noise points to nearest cluster using cluster centroids"""
