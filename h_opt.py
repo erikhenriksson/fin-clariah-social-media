@@ -35,11 +35,9 @@ def reduce_dimensions(embeddings):
     """Apply UMAP to reduce dimensions for clustering"""
     print("Reducing dimensions with UMAP...")
 
-    n_neighbors = min(15, len(embeddings) // 30)
+    n_neighbors = min(30, len(embeddings) // 30)
 
-    reducer = umap.UMAP(
-        n_components=15, n_neighbors=n_neighbors, min_dist=0.0, random_state=42
-    )
+    reducer = umap.UMAP(n_components=15, n_neighbors=n_neighbors, min_dist=0.0)
 
     reduced_embeddings = reducer.fit_transform(embeddings)
     print(f"Reduced to {reduced_embeddings.shape[1]}D")
@@ -105,7 +103,7 @@ def create_visualization(embeddings, labels, output_dir):
     print("Creating visualization...")
 
     # Reduce to 2D for visualization
-    reducer_2d = umap.UMAP(n_components=2, random_state=42)
+    reducer_2d = umap.UMAP(n_components=2)
     embeddings_2d = reducer_2d.fit_transform(embeddings)
 
     # Plot clusters
@@ -121,10 +119,10 @@ def create_visualization(embeddings, labels, output_dir):
             c=[colors[i]],
             label=f"Cluster {cluster_id} ({np.sum(mask)} docs)",
             alpha=0.7,
-            s=20,
+            s=10,
         )
 
-    plt.title(f"HDBSCAN Clusters: {len(unique_clusters)} communities")
+    plt.title(f"HDBSCAN Clusters: {len(unique_clusters)}")
     plt.xlabel("UMAP 1")
     plt.ylabel("UMAP 2")
     plt.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
