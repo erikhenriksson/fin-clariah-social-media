@@ -8,10 +8,11 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import umap
-from hdbscan import HDBSCAN
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import normalize
+
+from hdbscan import HDBSCAN
 
 warnings.filterwarnings("ignore")
 
@@ -53,18 +54,20 @@ class HDBSCANSubregisterAnalyzer:
 
         print(f"Output will be saved to: {self.output_dir}")
 
-        # Normalize embeddings for cosine distance
+        # Normalize embeddings once for cosine distance
         self.embeddings_norm = normalize(self.embeddings, norm="l2").astype(np.float64)
 
     def reduce_dimensions_umap(self):
-        """Apply UMAP for dimensionality reduction"""
-        print("Reducing dimensions with UMAP to 50 components...")
+        """Apply UMAP for dimensionality reduction - create both clustering and visualization embeddings"""
+        print("Reducing dimensions with UMAP...")
 
-        # Use parameters optimized for clustering rather than visualization
-        n_neighbors = min(50, len(self.embeddings) // 20)
+        # Parameters for clustering (moderate reduction)
+        n_neighbors = min(15, len(self.embeddings) // 30)
 
-        self.umap_reducer = umap.UMAP(
-            n_components=50,
+        # UMAP for clustering (to ~15-30 dimensions)
+        print(f"Creating clustering embeddings (15D, n_neighbors={n_neighbors})...")
+        self.umap_clustering = umap.UMAP(
+            n_components=15,
             n_neighbors=n_neighbors,
             min_dist=0.0,
             metric="cosine",
@@ -72,15 +75,26 @@ class HDBSCANSubregisterAnalyzer:
             low_memory=True,
         )
 
-        self.embeddings_reduced = self.umap_reducer.fit_transform(self.embeddings_norm)
+        self.embeddings_clustering = self.umap_clustering.fit_transform(
+            self.embeddings_norm
+        )
+        print(f"Clustering embeddings shape: {self.embeddings_clustering.shape}")
 
-        # Keep normalized for consistent distance calculations
-        self.embeddings_reduced = normalize(self.embeddings_reduced, norm="l2").astype(
-            np.float64
+        # UMAP for visualization (to 2D, using original embeddings)
+        print(f"Creating visualization embeddings (2D, n_neighbors={n_neighbors})...")
+        self.umap_visualization = umap.UMAP(
+            n_components=2,
+            n_neighbors=n_neighbors,
+            min_dist=0.1,
+            metric="cosine",
+            random_state=42,
+            low_memory=True,
         )
 
-        print(f"Reduced to {self.embeddings_reduced.shape[1]} dimensions")
-        return self.embeddings_reduced
+        self.embeddings_2d = self.umap_visualization.fit_transform(self.embeddings_norm)
+        print(f"Visualization embeddings shape: {self.embeddings_2d.shape}")
+
+        return self.embeddings_clustering
 
     def find_optimal_hdbscan_params(self):
         """Find optimal HDBSCAN parameters by testing different min_cluster_size values"""
@@ -88,43 +102,37 @@ class HDBSCANSubregisterAnalyzer:
         print("OPTIMIZING HDBSCAN PARAMETERS")
         print("=" * 60)
 
-        # Test different min_cluster_size values
-        # Start conservative to avoid too many tiny clusters
+        # Test different min_cluster_size values - include smaller clusters
         min_sizes = [
-            max(10, len(self.embeddings) // 200),  # 0.5% of data
-            max(15, len(self.embeddings) // 100),  # 1% of data
-            max(25, len(self.embeddings) // 50),  # 2% of data
-            max(50, len(self.embeddings) // 25),  # 4% of data
-            max(75, len(self.embeddings) // 15),  # ~6% of data
+            5,
+            10,
+            15,
+            max(20, len(self.embeddings) // 200),  # 0.5% of data
+            max(25, len(self.embeddings) // 100),  # 1% of data
+            max(50, len(self.embeddings) // 50),  # 2% of data
         ]
 
         # Remove duplicates and ensure reasonable range
-        min_sizes = sorted(list(set(min_sizes)))
+        min_sizes = sorted(
+            list(set([s for s in min_sizes if s <= len(self.embeddings) // 4]))
+        )
 
         results = {}
 
         for min_size in min_sizes:
             print(f"Testing min_cluster_size={min_size}...")
 
-            # HDBSCAN with precomputed cosine distances
+            # Use direct metric computation instead of precomputed distances
             clusterer = HDBSCAN(
                 min_cluster_size=min_size,
-                min_samples=min(5, min_size // 3),  # Conservative min_samples
-                metric="precomputed",
+                min_samples=max(3, min_size // 5),
+                metric="cosine",
                 cluster_selection_epsilon=0.0,
-                cluster_selection_method="eom",  # Excess of Mass
+                cluster_selection_method="eom",
                 random_state=42,
             )
 
-            # Compute cosine distance matrix (1 - cosine_similarity)
-            cosine_sim = np.dot(self.embeddings_reduced, self.embeddings_reduced.T)
-            cosine_dist = 1 - cosine_sim
-            np.fill_diagonal(cosine_dist, 0)  # Ensure diagonal is 0
-
-            # Ensure correct dtype for HDBSCAN
-            cosine_dist = cosine_dist.astype(np.float64)
-
-            cluster_labels = clusterer.fit_predict(cosine_dist)
+            cluster_labels = clusterer.fit_predict(self.embeddings_clustering)
 
             # Count non-noise clusters and noise points
             n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
@@ -132,21 +140,19 @@ class HDBSCANSubregisterAnalyzer:
             noise_pct = (n_noise / len(cluster_labels)) * 100
 
             # Only compute silhouette if we have valid clusters and not too much noise
-            if n_clusters >= 2 and noise_pct < 50:
+            if n_clusters >= 2 and noise_pct < 70:
                 # For silhouette calculation, exclude noise points
                 non_noise_mask = cluster_labels != -1
-                if (
-                    np.sum(non_noise_mask) > 50
-                ):  # Need enough points for meaningful silhouette
+                if np.sum(non_noise_mask) > 50:
                     sil_score = silhouette_score(
-                        self.embeddings_reduced[non_noise_mask],
+                        self.embeddings_clustering[non_noise_mask],
                         cluster_labels[non_noise_mask],
                         metric="cosine",
                     )
                 else:
-                    sil_score = -1  # Invalid
+                    sil_score = -1
             else:
-                sil_score = -1  # Invalid clustering
+                sil_score = -1
 
             results[min_size] = {
                 "clusterer": clusterer,
@@ -161,20 +167,19 @@ class HDBSCANSubregisterAnalyzer:
                 f"  Clusters: {n_clusters}, Noise: {n_noise} ({noise_pct:.1f}%), Silhouette: {sil_score:.3f}"
             )
 
-        # Find best parameters - prioritize low noise, then good silhouette
+        # Find best parameters - balance clusters and noise
         valid_results = {k: v for k, v in results.items() if v["silhouette"] > 0}
 
         if not valid_results:
             raise ValueError(
-                "No valid HDBSCAN clustering found. Try with smaller min_cluster_size values."
+                "No valid HDBSCAN clustering found. Dataset may not have clear cluster structure."
             )
 
-        # Choose result with lowest noise percentage, breaking ties with silhouette score
-        best_min_size = min(
+        # Choose result with good balance: prefer more clusters but not excessive noise
+        best_min_size = max(
             valid_results.keys(),
             key=lambda k: (
-                valid_results[k]["noise_pct"],
-                -valid_results[k]["silhouette"],
+                valid_results[k]["silhouette"] - valid_results[k]["noise_pct"] / 100
             ),
         )
 
@@ -226,8 +231,8 @@ class HDBSCANSubregisterAnalyzer:
 
         return best_min_size, best_result, results
 
-    def handle_noise_points(self, labels, embeddings):
-        """Assign noise points to nearest cluster using KMeans on cluster centers"""
+    def handle_noise_points(self, labels):
+        """Assign noise points to nearest cluster using cluster centroids"""
         print("Assigning noise points to nearest clusters...")
 
         # Find noise points
@@ -240,21 +245,25 @@ class HDBSCANSubregisterAnalyzer:
 
         print(f"Found {n_noise} noise points ({n_noise / len(labels) * 100:.1f}%)")
 
-        # Get cluster centers from non-noise points
+        # Get cluster centers from non-noise points (using clustering embeddings)
         unique_clusters = sorted([c for c in set(labels) if c != -1])
         cluster_centers = []
 
         for cluster_id in unique_clusters:
             cluster_mask = labels == cluster_id
-            cluster_center = np.mean(embeddings[cluster_mask], axis=0)
-            # Normalize center to unit sphere
+            cluster_center = np.mean(self.embeddings_clustering[cluster_mask], axis=0)
             cluster_center = cluster_center / np.linalg.norm(cluster_center)
             cluster_centers.append(cluster_center)
 
         cluster_centers = np.array(cluster_centers)
 
         # Assign noise points to nearest cluster center using cosine similarity
-        noise_embeddings = embeddings[noise_mask]
+        noise_embeddings = self.embeddings_clustering[noise_mask]
+        # Normalize noise embeddings
+        noise_embeddings = noise_embeddings / np.linalg.norm(
+            noise_embeddings, axis=1, keepdims=True
+        )
+
         similarities = np.dot(noise_embeddings, cluster_centers.T)
         nearest_clusters = np.argmax(similarities, axis=1)
 
@@ -266,10 +275,6 @@ class HDBSCANSubregisterAnalyzer:
             new_labels[noise_idx] = unique_clusters[nearest_clusters[i]]
 
         print(f"Assigned all {n_noise} noise points to nearest clusters")
-
-        # Verify no noise points remain
-        assert -1 not in new_labels, "Error: Some noise points were not assigned"
-
         return new_labels
 
     def analyze_communities(self, labels, top_n=20):
@@ -278,7 +283,9 @@ class HDBSCANSubregisterAnalyzer:
         n_clusters = len(unique_clusters)
 
         # Compute silhouette score for final clustering
-        sil_score = silhouette_score(self.embeddings_reduced, labels, metric="cosine")
+        sil_score = silhouette_score(
+            self.embeddings_clustering, labels, metric="cosine"
+        )
 
         analysis_text = f"\n=== HDBSCAN COMMUNITY ANALYSIS ({n_clusters} clusters, Silhouette={sil_score:.3f}) ===\n"
         print(analysis_text)
@@ -349,9 +356,14 @@ class HDBSCANSubregisterAnalyzer:
             if len(members) > 1000:
                 sample_size = min(500, len(members))
                 sample_members = np.random.choice(members, sample_size, replace=False)
-                cluster_embeddings = self.embeddings_reduced[sample_members]
+                cluster_embeddings = self.embeddings_clustering[sample_members]
             else:
-                cluster_embeddings = self.embeddings_reduced[members]
+                cluster_embeddings = self.embeddings_clustering[members]
+
+            # Normalize for cosine similarity
+            cluster_embeddings = cluster_embeddings / np.linalg.norm(
+                cluster_embeddings, axis=1, keepdims=True
+            )
 
             # Compute average pairwise cosine similarity within cluster
             similarities = np.dot(cluster_embeddings, cluster_embeddings.T)
@@ -378,25 +390,16 @@ class HDBSCANSubregisterAnalyzer:
 
         return coherence_scores
 
-    def visualize_communities_umap(self, labels):
-        """Create UMAP 2D visualization of clusters"""
+    def visualize_communities(self, labels):
+        """Create 2D visualization of clusters using pre-computed 2D embeddings"""
         try:
             unique_clusters = sorted(set(labels))
             n_clusters = len(unique_clusters)
 
-            print(f"Creating UMAP visualization for {n_clusters} clusters...")
+            print(f"Creating 2D visualization for {n_clusters} clusters...")
 
-            # UMAP projection to 2D for visualization
-            umap_vis = umap.UMAP(
-                n_components=2,
-                n_neighbors=min(30, len(self.embeddings_reduced) // 10),
-                min_dist=0.1,
-                metric="cosine",
-                random_state=42,
-                low_memory=True,
-            )
-
-            embedding_2d = umap_vis.fit_transform(self.embeddings_reduced)
+            # Use the pre-computed 2D embeddings from original normalized embeddings
+            embedding_2d = self.embeddings_2d
 
             # Create color map for clusters
             colors = plt.cm.tab10(np.linspace(0, 1, n_clusters))
@@ -436,7 +439,7 @@ class HDBSCANSubregisterAnalyzer:
                     )
 
             plt.title(
-                f"HDBSCAN Communities: {n_clusters} clusters\n(All points assigned, no noise)"
+                f"HDBSCAN Communities: {n_clusters} clusters\n(2D UMAP projection from original embeddings)"
             )
             plt.xlabel("UMAP 1")
             plt.ylabel("UMAP 2")
@@ -449,11 +452,11 @@ class HDBSCANSubregisterAnalyzer:
             plt.savefig(plot_path, dpi=150, bbox_inches="tight")
             plt.close()
 
-            print(f"UMAP plot saved to: {plot_path}")
+            print(f"Visualization saved to: {plot_path}")
             return embedding_2d
 
         except Exception as e:
-            print(f"Error creating UMAP visualization: {e}")
+            print(f"Error creating visualization: {e}")
             plt.close("all")
             return None
 
@@ -462,10 +465,10 @@ class HDBSCANSubregisterAnalyzer:
         try:
             print("=" * 60)
             print("HDBSCAN SUBREGISTER DISCOVERY ANALYSIS")
-            print("Strategy: Find natural clusters, then assign all noise points")
+            print("Strategy: UMAP reduction + HDBSCAN clustering + noise assignment")
             print("=" * 60)
 
-            # Step 1: UMAP dimensionality reduction
+            # Step 1: UMAP dimensionality reduction (both clustering and visualization)
             self.reduce_dimensions_umap()
 
             # Step 2: Find optimal HDBSCAN parameters
@@ -475,12 +478,12 @@ class HDBSCANSubregisterAnalyzer:
 
             # Step 3: Handle noise points by assigning to nearest clusters
             raw_labels = optimal_result["labels"]
-            final_labels = self.handle_noise_points(raw_labels, self.embeddings_reduced)
+            final_labels = self.handle_noise_points(raw_labels)
 
             # Recompute final metrics
             final_n_clusters = len(set(final_labels))
             final_sil_score = silhouette_score(
-                self.embeddings_reduced, final_labels, metric="cosine"
+                self.embeddings_clustering, final_labels, metric="cosine"
             )
 
             # Save summary info
@@ -490,9 +493,15 @@ class HDBSCANSubregisterAnalyzer:
                 f.write("=" * 60 + "\n\n")
                 f.write(f"Input file: {self.pickle_path}\n")
                 f.write(f"Number of documents: {len(self.embeddings)}\n")
-                f.write(f"Embedding dimension: {self.embeddings.shape[1]}\n")
+                f.write(f"Original embedding dimension: {self.embeddings.shape[1]}\n")
+                f.write(
+                    f"Clustering embedding dimension: {self.embeddings_clustering.shape[1]}\n"
+                )
                 f.write(f"Register distribution: {dict(Counter(self.labels))}\n\n")
-                f.write(f"METHOD: HDBSCAN + Noise Assignment\n")
+                f.write(f"METHOD: UMAP + HDBSCAN + Noise Assignment\n")
+                f.write(
+                    f"UMAP parameters: n_components=15, min_dist=0.0, metric=cosine\n"
+                )
                 f.write(f"Optimal min_cluster_size: {optimal_min_size}\n")
                 f.write(f"Raw clusters found: {optimal_result['n_clusters']}\n")
                 f.write(
@@ -514,11 +523,8 @@ class HDBSCANSubregisterAnalyzer:
             # Step 5: Compute coherence scores
             self.compute_community_coherence(final_labels)
 
-            # Step 6: Create visualization
-            try:
-                self.visualize_communities_umap(final_labels)
-            except Exception as e:
-                print(f"Skipping UMAP visualization due to error: {e}")
+            # Step 6: Create visualization using original embeddings → 2D
+            self.visualize_communities(final_labels)
 
             print("\n" + "=" * 60)
             print("HDBSCAN ANALYSIS COMPLETE")
@@ -527,13 +533,15 @@ class HDBSCANSubregisterAnalyzer:
             print(f"All results saved to: {self.output_dir}")
             print("=" * 60)
 
+            return final_labels, final_sil_score
+
         except Exception as e:
             print(f"Error during analysis: {e}")
             import traceback
 
             traceback.print_exc()
+            return None, None
         finally:
-            # Cleanup
             plt.close("all")
 
 
@@ -552,7 +560,8 @@ if __name__ == "__main__":
         print(f"{i}. {os.path.basename(file)}")
 
     print(f"\nAll results will be saved to: {results_dir}/")
-    print("Method: HDBSCAN with noise point assignment")
+    print("Method: UMAP (15D) + HDBSCAN + noise assignment")
+    print("Visualization: UMAP (2D) from original embeddings")
 
     print("\n" + "=" * 80)
     print("PROCESSING ALL PKL FILES")
@@ -574,10 +583,15 @@ if __name__ == "__main__":
             )
 
             # Run analysis
-            analyzer.run_full_analysis()
+            labels, sil_score = analyzer.run_full_analysis()
 
-            successful_analyses += 1
-            print(f"✓ Successfully completed analysis for {os.path.basename(pkl_file)}")
+            if labels is not None:
+                successful_analyses += 1
+                print(
+                    f"✓ Successfully completed analysis for {os.path.basename(pkl_file)}"
+                )
+            else:
+                failed_analyses.append((pkl_file, "Analysis returned None"))
 
         except ValueError as e:
             if "too small" in str(e):
@@ -597,7 +611,6 @@ if __name__ == "__main__":
             continue
 
         finally:
-            # Cleanup between files
             plt.close("all")
 
     # Final summary
@@ -633,4 +646,4 @@ if __name__ == "__main__":
             for subdir in sorted(subdirs):
                 print(f"  - {results_dir}/{subdir}/")
 
-    print("\nHDBSCAN analysis completed with cleanup.")
+    print("\nHDBScan analysis completed.")
