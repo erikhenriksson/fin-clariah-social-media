@@ -98,139 +98,76 @@ class HDBSCANSubregisterAnalyzer:
         return self.embeddings_clustering
 
     def find_optimal_hdbscan_params(self):
-        """Find optimal HDBSCAN parameters by testing different min_cluster_size values"""
+        """Test single HDBSCAN parameter configuration and save results"""
         print("=" * 60)
-        print("OPTIMIZING HDBSCAN PARAMETERS")
+        print("TESTING HDBSCAN PARAMETERS")
         print("=" * 60)
 
-        # Test different min_cluster_size values - include smaller clusters
-        min_sizes = [
-            5,
-            10,
-            15,
-            max(20, len(self.embeddings) // 200),  # 0.5% of data
-            max(25, len(self.embeddings) // 100),  # 1% of data
-            max(50, len(self.embeddings) // 50),  # 2% of data
-        ]
+        # Single min_cluster_size value as specified
+        min_size = len(self.embeddings) // 10
 
-        # Remove duplicates and ensure reasonable range
-        min_sizes = sorted(
-            list(set([s for s in min_sizes if s <= len(self.embeddings) // 4]))
+        print(f"Testing min_cluster_size={min_size}...")
+
+        # Configure and run HDBSCAN
+        clusterer = HDBSCAN(
+            min_cluster_size=min_size,
+            min_samples=1,
+            cluster_selection_epsilon=0.0,
+            cluster_selection_method="eom",
         )
 
-        results = {}
+        cluster_labels = clusterer.fit_predict(self.embeddings_clustering)
 
-        for min_size in min_sizes:
-            print(f"Testing min_cluster_size={min_size}...")
+        # Calculate metrics
+        n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
+        n_noise = list(cluster_labels).count(-1)
+        noise_pct = (n_noise / len(cluster_labels)) * 100
 
-            # Use direct metric computation instead of precomputed distances
-            clusterer = HDBSCAN(
-                min_cluster_size=min_size,
-                min_samples=max(3, min_size // 5),
-                # metric="cosine",
-                cluster_selection_epsilon=0.0,
-                cluster_selection_method="eom",
-                # random_state=42,
-            )
-
-            cluster_labels = clusterer.fit_predict(self.embeddings_clustering)
-
-            # Count non-noise clusters and noise points
-            n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
-            n_noise = list(cluster_labels).count(-1)
-            noise_pct = (n_noise / len(cluster_labels)) * 100
-
-            # Only compute silhouette if we have valid clusters and not too much noise
-            if n_clusters >= 2 and noise_pct < 70:
-                # For silhouette calculation, exclude noise points
-                non_noise_mask = cluster_labels != -1
-                if np.sum(non_noise_mask) > 50:
-                    sil_score = silhouette_score(
-                        self.embeddings_clustering[non_noise_mask],
-                        cluster_labels[non_noise_mask],
-                        # metric="cosine",
-                    )
-                else:
-                    sil_score = -1
-            else:
+        # Calculate silhouette score (handle edge cases)
+        if n_clusters >= 2 and len(set(cluster_labels)) > 1:
+            try:
+                sil_score = silhouette_score(self.embeddings_clustering, cluster_labels)
+            except:
                 sil_score = -1
+        else:
+            sil_score = -1
 
-            results[min_size] = {
-                "clusterer": clusterer,
-                "labels": cluster_labels,
-                "n_clusters": n_clusters,
-                "n_noise": n_noise,
-                "noise_pct": noise_pct,
-                "silhouette": sil_score,
-            }
-
-            print(
-                f"  Clusters: {n_clusters}, Noise: {n_noise} ({noise_pct:.1f}%), Silhouette: {sil_score:.3f}"
-            )
-
-        # Find best parameters - balance clusters and noise
-        valid_results = {k: v for k, v in results.items() if v["silhouette"] > 0}
-
-        if not valid_results:
-            raise ValueError(
-                "No valid HDBSCAN clustering found. Dataset may not have clear cluster structure."
-            )
-
-        # Choose result with good balance: prefer more clusters but not excessive noise
-        best_min_size = max(
-            valid_results.keys(),
-            key=lambda k: (
-                valid_results[k]["silhouette"] - valid_results[k]["noise_pct"] / 100
-            ),
+        # Display results
+        print(
+            f"  Clusters: {n_clusters}, Noise: {n_noise} ({noise_pct:.1f}%), Silhouette: {sil_score:.3f}"
         )
-
-        best_result = results[best_min_size]
 
         print("\n" + "=" * 60)
-        print("HDBSCAN PARAMETER OPTIMIZATION RESULTS")
+        print("HDBSCAN RESULTS")
         print("=" * 60)
-        print("\nmin_cluster_size | Clusters | Noise% | Silhouette")
-        print("-" * 50)
+        print(f"min_cluster_size: {min_size}")
+        print(f"Clusters found: {n_clusters}")
+        print(f"Noise points: {n_noise} ({noise_pct:.1f}%)")
+        print(f"Silhouette score: {sil_score:.3f}")
 
-        for min_size in sorted(results.keys()):
-            r = results[min_size]
-            marker = " <- BEST" if min_size == best_min_size else ""
-            print(
-                f"      {min_size:3d}        |    {r['n_clusters']:2d}    | {r['noise_pct']:5.1f}% |   {r['silhouette']:6.3f}{marker}"
-            )
-
-        print(f"\n✓ OPTIMAL PARAMETERS:")
-        print(f"  min_cluster_size: {best_min_size}")
-        print(f"  Clusters found: {best_result['n_clusters']}")
-        print(
-            f"  Noise points: {best_result['n_noise']} ({best_result['noise_pct']:.1f}%)"
-        )
-        print(f"  Silhouette score: {best_result['silhouette']:.3f}")
-
-        # Save optimization results
-        optimization_file = self.output_dir / "hdbscan_optimization.txt"
+        # Save results regardless of outcome
+        optimization_file = self.output_dir / "hdbscan_results.txt"
         with open(optimization_file, "w", encoding="utf-8") as f:
-            f.write("HDBSCAN PARAMETER OPTIMIZATION\n")
+            f.write("HDBSCAN CLUSTERING RESULTS\n")
             f.write("=" * 50 + "\n\n")
-            f.write(f"Optimal min_cluster_size: {best_min_size}\n")
-            f.write(f"Clusters found: {best_result['n_clusters']}\n")
-            f.write(
-                f"Noise points: {best_result['n_noise']} ({best_result['noise_pct']:.1f}%)\n"
-            )
-            f.write(f"Silhouette score: {best_result['silhouette']:.3f}\n\n")
-            f.write("All tested parameters:\n")
-            f.write("min_cluster_size | Clusters | Noise% | Silhouette\n")
-            f.write("-" * 50 + "\n")
-            for min_size in sorted(results.keys()):
-                r = results[min_size]
-                marker = " <- OPTIMAL" if min_size == best_min_size else ""
-                f.write(
-                    f"      {min_size:3d}        |    {r['n_clusters']:2d}    | {r['noise_pct']:5.1f}% |   {r['silhouette']:6.3f}{marker}\n"
-                )
+            f.write(f"min_cluster_size: {min_size}\n")
+            f.write(f"Clusters found: {n_clusters}\n")
+            f.write(f"Noise points: {n_noise} ({noise_pct:.1f}%)\n")
+            f.write(f"Silhouette score: {sil_score:.3f}\n")
 
-        print(f"Optimization results saved to: {optimization_file}")
+        print(f"Results saved to: {optimization_file}")
 
-        return best_min_size, best_result, results
+        # Return the single result
+        result = {
+            "clusterer": clusterer,
+            "labels": cluster_labels,
+            "n_clusters": n_clusters,
+            "n_noise": n_noise,
+            "noise_pct": noise_pct,
+            "silhouette": sil_score,
+        }
+
+        return min_size, result
 
     def handle_noise_points(self, labels):
         """Assign noise points to nearest cluster using cluster centroids"""
