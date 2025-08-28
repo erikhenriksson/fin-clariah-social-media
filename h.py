@@ -104,17 +104,22 @@ class HDBSCANSubregisterAnalyzer:
         for min_size in min_sizes:
             print(f"Testing min_cluster_size={min_size}...")
 
-            # HDBSCAN with cosine metric
+            # HDBSCAN with precomputed cosine distances
             clusterer = HDBSCAN(
                 min_cluster_size=min_size,
                 min_samples=min(5, min_size // 3),  # Conservative min_samples
-                metric="cosine",
+                metric="precomputed",
                 cluster_selection_epsilon=0.0,
                 cluster_selection_method="eom",  # Excess of Mass
                 random_state=42,
             )
 
-            cluster_labels = clusterer.fit_predict(self.embeddings_reduced)
+            # Compute cosine distance matrix (1 - cosine_similarity)
+            cosine_sim = np.dot(self.embeddings_reduced, self.embeddings_reduced.T)
+            cosine_dist = 1 - cosine_sim
+            np.fill_diagonal(cosine_dist, 0)  # Ensure diagonal is 0
+
+            cluster_labels = clusterer.fit_predict(cosine_dist)
 
             # Count non-noise clusters and noise points
             n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
