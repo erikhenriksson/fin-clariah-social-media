@@ -419,7 +419,7 @@ class SubregisterAnalyzer:
                 f.write(f"Target cluster range: 2-6 clusters\n")
                 f.write(f"Optimization criterion: Calinski-Harabasz Score\n")
                 f.write(f"Optimal number of clusters: {optimal_k}\n")
-                f.write(f"Best CH score: {optimal_result['ch_score']:.2f}\n\n")
+                f.write(f"Best silhouette: {optimal_result['silhouette']:.2f}\n\n")
 
             # Step 3: Full analysis at optimal clustering
             print(f"\n{'=' * 60}")
