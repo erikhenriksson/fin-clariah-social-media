@@ -56,6 +56,7 @@ class HDBSCANSubregisterAnalyzer:
 
         # Normalize embeddings once for cosine distance
         # self.embeddings_norm = normalize(self.embeddings, norm="l2").astype(np.float64)
+        self.embeddings_norm = self.embeddings
 
     def reduce_dimensions_umap(self):
         """Apply UMAP for dimensionality reduction - create both clustering and visualization embeddings"""
