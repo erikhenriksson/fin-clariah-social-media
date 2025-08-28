@@ -54,7 +54,7 @@ class HDBSCANSubregisterAnalyzer:
         print(f"Output will be saved to: {self.output_dir}")
 
         # Normalize embeddings for cosine distance
-        self.embeddings_norm = normalize(self.embeddings, norm="l2")
+        self.embeddings_norm = normalize(self.embeddings, norm="l2").astype(np.float64)
 
     def reduce_dimensions_umap(self):
         """Apply UMAP for dimensionality reduction"""
@@ -75,7 +75,9 @@ class HDBSCANSubregisterAnalyzer:
         self.embeddings_reduced = self.umap_reducer.fit_transform(self.embeddings_norm)
 
         # Keep normalized for consistent distance calculations
-        self.embeddings_reduced = normalize(self.embeddings_reduced, norm="l2")
+        self.embeddings_reduced = normalize(self.embeddings_reduced, norm="l2").astype(
+            np.float64
+        )
 
         print(f"Reduced to {self.embeddings_reduced.shape[1]} dimensions")
         return self.embeddings_reduced
@@ -118,6 +120,9 @@ class HDBSCANSubregisterAnalyzer:
             cosine_sim = np.dot(self.embeddings_reduced, self.embeddings_reduced.T)
             cosine_dist = 1 - cosine_sim
             np.fill_diagonal(cosine_dist, 0)  # Ensure diagonal is 0
+
+            # Ensure correct dtype for HDBSCAN
+            cosine_dist = cosine_dist.astype(np.float64)
 
             cluster_labels = clusterer.fit_predict(cosine_dist)
 
