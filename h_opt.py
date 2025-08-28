@@ -1,7 +1,6 @@
 import glob
 import os
 import pickle
-from collections import Counter
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -12,6 +11,7 @@ from sklearn.metrics import silhouette_score
 from hdbscan import HDBSCAN
 
 UMAP_COMPONENTS = 50
+SIZE_LIMIT = 1000
 
 
 def load_data(pickle_path):
@@ -25,9 +25,9 @@ def load_data(pickle_path):
 
     print(f"Loaded {len(embeddings)} documents with {embeddings.shape[1]}D embeddings")
 
-    if len(embeddings) < 500:
+    if len(embeddings) < SIZE_LIMIT:
         raise ValueError(
-            f"Dataset too small ({len(embeddings)} documents). Need 500+ for HDBSCAN."
+            f"Dataset too small ({len(embeddings)} documents). Need {SIZE_LIMIT}+ for HDBSCAN."
         )
 
     return embeddings, texts, preds
