@@ -11,6 +11,8 @@ from sklearn.metrics import silhouette_score
 
 from hdbscan import HDBSCAN
 
+UMAP_COMPONENTS = 50
+
 
 def load_data(pickle_path):
     """Load embeddings and metadata from pickle file"""
@@ -37,7 +39,9 @@ def reduce_dimensions(embeddings):
 
     n_neighbors = min(30, len(embeddings) // 30)
 
-    reducer = umap.UMAP(n_components=50, n_neighbors=n_neighbors, min_dist=0.0)
+    reducer = umap.UMAP(
+        n_components=UMAP_COMPONENTS, n_neighbors=n_neighbors, min_dist=0.0
+    )
 
     reduced_embeddings = reducer.fit_transform(embeddings)
     print(f"Reduced to {reduced_embeddings.shape[1]}D")
@@ -222,7 +226,7 @@ def main():
 
     print(f"Found {len(pkl_files)} files to process")
 
-    results_dir = "hdbscan_results_simple"
+    results_dir = f"hdbscan_results_{UMAP_COMPONENTS}"
     Path(results_dir).mkdir(exist_ok=True)
 
     successful = 0
