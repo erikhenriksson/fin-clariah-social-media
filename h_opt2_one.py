@@ -183,7 +183,7 @@ def merge_low_quality_clusters(embeddings, labels, cluster_silhouettes, threshol
     return new_labels, updated_silhouettes
 
 
-def save_clustered_data(original_data, labels, pickle_path):
+def save_clustered_data(original_data, labels, pickle_path, output_dir):
     """Save the original data with cluster labels added"""
     print("Saving clustered data...")
 
@@ -194,9 +194,9 @@ def save_clustered_data(original_data, labels, pickle_path):
         new_row["cluster_label"] = int(labels[i])
         clustered_data.append(new_row)
 
-    # Create output filename with _clustered suffix
-    input_path = Path(pickle_path)
-    output_path = input_path.parent / (input_path.stem + "_clustered.pkl")
+    # Create output filename with _clustered suffix in the output directory
+    input_filename = Path(pickle_path).stem
+    output_path = output_dir / (input_filename + "_clustered.pkl")
 
     # Save the clustered data
     with open(output_path, "wb") as f:
@@ -331,7 +331,7 @@ def process_file(pickle_path, results_dir="hdbscan_results"):
         )
 
         # Save clustered data with labels
-        save_clustered_data(original_data, final_labels, pickle_path)
+        save_clustered_data(original_data, final_labels, pickle_path, output_dir)
 
         # Analyze and save results
         analyze_clusters(
