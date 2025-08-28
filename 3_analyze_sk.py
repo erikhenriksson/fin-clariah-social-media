@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import umap
 from sklearn.cluster import KMeans
-from sklearn.metrics import calinski_harabasz_score
+from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import normalize
 
 warnings.filterwarnings("ignore")
@@ -80,7 +80,7 @@ class SubregisterAnalyzer:
         return self.embeddings_reduced
 
     def find_optimal_clusters(self, k_range=[2, 3, 4, 5, 6]):
-        """Find optimal number of clusters using Calinski-Harabasz score"""
+        """Find optimal number of clusters using Silhouette score"""
         print("=" * 60)
         print("FINDING OPTIMAL NUMBER OF CLUSTERS")
         print("=" * 60)
@@ -95,31 +95,37 @@ class SubregisterAnalyzer:
 
             clusters = kmeans.fit_predict(self.embeddings_reduced)
 
-            # Calinski-Harabasz score (higher is better)
-            ch_score = calinski_harabasz_score(self.embeddings_reduced, clusters)
+            # Silhouette score (higher is better)
+            sil_score = silhouette_score(
+                self.embeddings_reduced, clusters, metric="cosine"
+            )
 
-            results[k] = {"clusters": clusters, "kmeans": kmeans, "ch_score": ch_score}
+            results[k] = {
+                "clusters": clusters,
+                "kmeans": kmeans,
+                "silhouette": sil_score,
+            }
 
-            print(f"  {k} clusters: Calinski-Harabasz = {ch_score:.2f}")
+            print(f"  {k} clusters: Silhouette = {sil_score:.3f}")
 
         # Find best clustering
-        best_k = max(results.keys(), key=lambda k: results[k]["ch_score"])
+        best_k = max(results.keys(), key=lambda k: results[k]["silhouette"])
         best_result = results[best_k]
 
         print("\n" + "=" * 60)
         print("CLUSTERING RESULTS")
         print("=" * 60)
-        print("\nCluster Count | Calinski-Harabasz Score")
-        print("-" * 40)
+        print("\nCluster Count | Silhouette Score")
+        print("-" * 35)
 
         for k in sorted(results.keys()):
             marker = " <- BEST" if k == best_k else ""
             print(
-                f"     {k:2d}       |       {results[k]['ch_score']:8.2f}    {marker}"
+                f"     {k:2d}       |      {results[k]['silhouette']:6.3f}    {marker}"
             )
 
         print(f"\n✓ OPTIMAL CLUSTERING: {best_k} clusters")
-        print(f"  Calinski-Harabasz Score: {best_result['ch_score']:.2f}")
+        print(f"  Silhouette Score: {best_result['silhouette']:.3f}")
 
         # Save optimization results
         optimization_file = self.output_dir / "resolution_optimization.txt"
@@ -127,15 +133,15 @@ class SubregisterAnalyzer:
             f.write("CLUSTER OPTIMIZATION RESULTS\n")
             f.write("=" * 50 + "\n\n")
             f.write(f"TARGET CLUSTER RANGE: 2-6 clusters\n")
-            f.write(f"OPTIMIZATION CRITERION: Calinski-Harabasz Score\n")
+            f.write(f"OPTIMIZATION CRITERION: Silhouette Score\n")
             f.write(f"Optimal Number of Clusters: {best_k}\n")
-            f.write(f"Best Calinski-Harabasz Score: {best_result['ch_score']:.2f}\n\n")
+            f.write(f"Best Silhouette Score: {best_result['silhouette']:.3f}\n\n")
             f.write("All Tested Cluster Counts:\n")
-            f.write("Clusters | Calinski-Harabasz\n")
-            f.write("-" * 30 + "\n")
+            f.write("Clusters | Silhouette\n")
+            f.write("-" * 25 + "\n")
             for k in sorted(results.keys()):
                 marker = " <- OPTIMAL" if k == best_k else ""
-                f.write(f"   {k:2d}    |     {results[k]['ch_score']:8.2f}{marker}\n")
+                f.write(f"   {k:2d}    |    {results[k]['silhouette']:6.3f}{marker}\n")
 
         print(f"Optimization results saved to: {optimization_file}")
 
@@ -144,10 +150,10 @@ class SubregisterAnalyzer:
     def analyze_communities(self, k, result, top_n=20):
         """Analyze and sample documents from each cluster"""
         clusters = result["clusters"]
-        ch_score = result["ch_score"]
+        sil_score = result["silhouette"]
 
         analysis_text = (
-            f"\n=== COMMUNITY ANALYSIS ({k} clusters, CH-score={ch_score:.2f}) ===\n"
+            f"\n=== COMMUNITY ANALYSIS ({k} clusters, Silhouette={sil_score:.3f}) ===\n"
         )
         print(analysis_text)
 
@@ -198,7 +204,7 @@ class SubregisterAnalyzer:
     def compute_community_coherence(self, k, result):
         """Compute and save coherence scores for clusters"""
         clusters = result["clusters"]
-        ch_score = result["ch_score"]
+        sil_score = result["silhouette"]
 
         print(f"Computing coherence scores for {k} clusters...")
 
@@ -228,7 +234,7 @@ class SubregisterAnalyzer:
             coherence_scores[cluster_id] = coherence
 
         coherence_text = (
-            f"Community Coherence Scores ({k} clusters, CH-score={ch_score:.2f}):\n"
+            f"Community Coherence Scores ({k} clusters, Silhouette={sil_score:.3f}):\n"
         )
 
         # Print and save results
@@ -248,18 +254,16 @@ class SubregisterAnalyzer:
 
     def compute_silhouette_analysis(self, k, result):
         """Compute silhouette scores for cluster validation"""
-        from sklearn.metrics import silhouette_samples, silhouette_score
+        from sklearn.metrics import silhouette_samples
 
         clusters = result["clusters"]
-        ch_score = result["ch_score"]
+        sil_score = result["silhouette"]
 
-        print(f"Computing silhouette analysis for {k} clusters...")
+        print(f"Computing detailed silhouette analysis for {k} clusters...")
 
         try:
-            # Overall silhouette score
-            overall_silhouette = silhouette_score(
-                self.embeddings_reduced, clusters, metric="cosine"
-            )
+            # Overall silhouette score (already computed)
+            overall_silhouette = sil_score
 
             # Individual silhouette scores for each document
             sample_silhouette_values = silhouette_samples(
@@ -283,7 +287,7 @@ class SubregisterAnalyzer:
             print(f"Per-Community Silhouette Scores:")
 
             silhouette_text = (
-                f"SILHOUETTE ANALYSIS ({k} clusters, CH-score={ch_score:.2f})\n"
+                f"SILHOUETTE ANALYSIS ({k} clusters, Silhouette={sil_score:.3f})\n"
             )
             silhouette_text += f"==================\n\n"
             silhouette_text += f"Overall Silhouette Score: {overall_silhouette:.3f}\n"
@@ -316,7 +320,7 @@ class SubregisterAnalyzer:
         """Visualize clusters using UMAP 2D projection"""
         try:
             clusters = result["clusters"]
-            ch_score = result["ch_score"]
+            sil_score = result["silhouette"]
 
             print(f"Creating UMAP visualization for {k} clusters...")
 
@@ -370,7 +374,7 @@ class SubregisterAnalyzer:
                     )
 
             plt.title(
-                f"UMAP Visualization: {k} Communities (CH-score={ch_score:.2f})\nNumbers show Community IDs"
+                f"UMAP Visualization: {k} Communities (Silhouette={sil_score:.3f})\nNumbers show Community IDs"
             )
             plt.xlabel("UMAP 1")
             plt.ylabel("UMAP 2")
@@ -420,7 +424,7 @@ class SubregisterAnalyzer:
             # Step 3: Full analysis at optimal clustering
             print(f"\n{'=' * 60}")
             print(f"ANALYZING OPTIMAL CLUSTERING: {optimal_k} clusters")
-            print(f"Calinski-Harabasz Score: {optimal_result['ch_score']:.2f}")
+            print(f"Silhouette Score: {optimal_result['silhouette']:.3f}")
             print(f"{'=' * 60}")
 
             # Analyze communities
@@ -441,7 +445,7 @@ class SubregisterAnalyzer:
             print("\n" + "=" * 60)
             print("ANALYSIS COMPLETE")
             print(f"Optimal clustering: {optimal_k} clusters")
-            print(f"Calinski-Harabasz score: {optimal_result['ch_score']:.2f}")
+            print(f"Silhouette score: {optimal_result['silhouette']:.3f}")
             print(f"All results saved to: {self.output_dir}")
             print("=" * 60)
 
