@@ -11,7 +11,7 @@ from sklearn.metrics import silhouette_samples, silhouette_score
 from hdbscan import HDBSCAN
 
 UMAP_COMPONENTS = 50
-SIZE_LIMIT = 1000
+SIZE_LIMIT = 500
 
 
 def load_data(pickle_path):
@@ -25,12 +25,30 @@ def load_data(pickle_path):
 
     print(f"Loaded {len(embeddings)} documents with {embeddings.shape[1]}D embeddings")
 
-    if len(embeddings) < SIZE_LIMIT:
-        raise ValueError(
-            f"Dataset too small ({len(embeddings)} documents). Need {SIZE_LIMIT}+ for HDBSCAN."
-        )
+    return embeddings, texts, preds, data
 
-    return embeddings, texts, preds
+
+def save_clustered_pickle(
+    original_data, labels, output_dir, original_filename, clustering_performed=True
+):
+    """Save original pickle with added cluster labels"""
+    print("Saving clustered data to pickle...")
+
+    # Add cluster_id to each document
+    clustered_data = []
+    for i, doc in enumerate(original_data):
+        doc_with_cluster = doc.copy()  # Copy the original document
+        doc_with_cluster["cluster_id"] = int(labels[i])  # Add cluster ID
+        clustered_data.append(doc_with_cluster)
+
+    # Save to output directory with same filename
+    output_pickle = output_dir / f"{original_filename}_clustered.pkl"
+    with open(output_pickle, "wb") as f:
+        pickle.dump(clustered_data, f)
+
+    status = "clustered" if clustering_performed else "single cluster (no clustering)"
+    print(f"Data saved to {output_pickle} ({status})")
+    return output_pickle
 
 
 def reduce_dimensions(embeddings):
@@ -112,7 +130,7 @@ def calculate_cluster_silhouettes(embeddings, labels):
     return cluster_silhouettes
 
 
-def create_visualization(embeddings, labels, output_dir):
+def create_visualization(embeddings, labels, output_dir, n_docs):
     """Create 2D visualization of clusters"""
     print("Creating visualization...")
 
@@ -136,7 +154,7 @@ def create_visualization(embeddings, labels, output_dir):
             s=10,
         )
 
-    plt.title(f"HDBSCAN Clusters: {len(unique_clusters)}")
+    plt.title(f"HDBSCAN Clusters: {len(unique_clusters)} (Total docs: {n_docs})")
     plt.xlabel("UMAP 1")
     plt.ylabel("UMAP 2")
     plt.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
@@ -148,13 +166,25 @@ def create_visualization(embeddings, labels, output_dir):
     print(f"Visualization saved to {plot_path}")
 
 
-def analyze_clusters(labels, texts, preds, embeddings, output_dir, cluster_silhouettes):
+def analyze_clusters(
+    labels,
+    texts,
+    preds,
+    embeddings,
+    output_dir,
+    cluster_silhouettes=None,
+    single_cluster=False,
+):
     """Analyze cluster composition and save results"""
     print("Analyzing clusters...")
 
     unique_clusters = sorted(set(labels))
     n_clusters = len(unique_clusters)
-    sil_score = silhouette_score(embeddings, labels)
+
+    if not single_cluster:
+        sil_score = silhouette_score(embeddings, labels)
+    else:
+        sil_score = None
 
     # Save cluster analysis
     analysis_file = output_dir / f"cluster_analysis_{n_clusters}.txt"
@@ -163,29 +193,43 @@ def analyze_clusters(labels, texts, preds, embeddings, output_dir, cluster_silho
         f.write(f"HDBSCAN CLUSTER ANALYSIS\n")
         f.write(f"{'=' * 40}\n\n")
         f.write(f"Total clusters: {n_clusters}\n")
-        f.write(f"Overall silhouette score: {sil_score:.3f}\n\n")
 
-        f.write(f"INDIVIDUAL CLUSTER SILHOUETTE SCORES:\n")
-        f.write(f"{'-' * 40}\n")
-        for cluster_id in unique_clusters:
-            cluster_score = cluster_silhouettes[cluster_id]
-            cluster_size = np.sum(labels == cluster_id)
+        if single_cluster:
             f.write(
-                f"Cluster {cluster_id}: {cluster_score:.3f} (size: {cluster_size})\n"
+                f"Note: All documents assigned to single cluster (no clustering performed)\n"
             )
-        f.write(f"\n")
+            f.write(f"Reason: Dataset too small or poor clustering quality\n\n")
+        else:
+            f.write(f"Overall silhouette score: {sil_score:.3f}\n\n")
+
+            f.write(f"INDIVIDUAL CLUSTER SILHOUETTE SCORES:\n")
+            f.write(f"{'-' * 40}\n")
+            for cluster_id in unique_clusters:
+                cluster_score = cluster_silhouettes[cluster_id]
+                cluster_size = np.sum(labels == cluster_id)
+                f.write(
+                    f"Cluster {cluster_id}: {cluster_score:.3f} (size: {cluster_size})\n"
+                )
+            f.write(f"\n")
 
         for cluster_id in unique_clusters:
             members = np.where(labels == cluster_id)[0]
-            cluster_score = cluster_silhouettes[cluster_id]
 
-            f.write(
-                f"\n--- Cluster {cluster_id} ({len(members)} documents, silhouette: {cluster_score:.3f}) ---\n"
-            )
+            if not single_cluster:
+                cluster_score = cluster_silhouettes[cluster_id]
+                f.write(
+                    f"\n--- Cluster {cluster_id} ({len(members)} documents, silhouette: {cluster_score:.3f}) ---\n"
+                )
+            else:
+                f.write(f"\n--- Cluster {cluster_id} ({len(members)} documents) ---\n")
 
             # Sample up to 20 documents from cluster
             sample_size = min(20, len(members))
-            sample_indices = np.random.choice(members, sample_size, replace=False)
+            sample_indices = (
+                np.random.choice(members, sample_size, replace=False)
+                if len(members) > sample_size
+                else members
+            )
 
             for i, idx in enumerate(sample_indices):
                 doc_text = texts[idx].replace("\n", " ")[:200] + "..."
@@ -195,7 +239,15 @@ def analyze_clusters(labels, texts, preds, embeddings, output_dir, cluster_silho
                 f.write(f"... and {len(members) - sample_size} more documents\n")
 
     print(f"Analysis saved to {analysis_file}")
-    print(f"Final results: {n_clusters} clusters, silhouette score: {sil_score:.3f}")
+
+    if single_cluster:
+        print(
+            f"Final results: {n_clusters} cluster (all documents), no clustering performed"
+        )
+    else:
+        print(
+            f"Final results: {n_clusters} clusters, silhouette score: {sil_score:.3f}"
+        )
 
 
 def process_file(pickle_path, results_dir="hdbscan_results"):
@@ -207,11 +259,39 @@ def process_file(pickle_path, results_dir="hdbscan_results"):
 
     try:
         # Load data
-        embeddings, texts, preds = load_data(pickle_path)
+        embeddings, texts, preds, original_data = load_data(pickle_path)
         output_dir.mkdir(parents=True, exist_ok=True)
         print(f"Output: {output_dir}")
 
-        # Process pipeline
+        # Check if dataset is too small
+        if len(embeddings) < SIZE_LIMIT:
+            print(
+                f"Dataset too small ({len(embeddings)} < {SIZE_LIMIT}), assigning all to cluster 0"
+            )
+
+            # Assign all documents to cluster 0
+            labels_single = np.zeros(len(embeddings), dtype=int)
+
+            # Save analysis for single cluster case
+            analyze_clusters(
+                labels_single, texts, preds, embeddings, output_dir, single_cluster=True
+            )
+
+            # Create simple visualization (all points in one cluster)
+            create_visualization(embeddings, labels_single, output_dir, len(embeddings))
+
+            # Save clustered pickle
+            save_clustered_pickle(
+                original_data,
+                labels_single,
+                output_dir,
+                filename,
+                clustering_performed=False,
+            )
+
+            return "single_cluster_small"
+
+        # Process pipeline for clustering
         reduced_embeddings = reduce_dimensions(embeddings)
         labels = cluster_documents(reduced_embeddings)
         labels_no_noise = assign_noise_to_clusters(reduced_embeddings, labels)
@@ -222,29 +302,58 @@ def process_file(pickle_path, results_dir="hdbscan_results"):
 
         if overall_silhouette < 0.5:
             print(
-                f"Skipping {filename}: Poor clustering quality (silhouette = {overall_silhouette:.3f} < 0.5)"
+                f"Poor clustering quality (silhouette = {overall_silhouette:.3f} < 0.5), assigning all to cluster 0"
             )
 
-            # Save skip report
-            skip_report = output_dir / f"clustering_skipped_{filename}.txt"
+            # Assign all documents to cluster 0
+            labels_single = np.zeros(len(embeddings), dtype=int)
+
+            # Save analysis for single cluster case
+            analyze_clusters(
+                labels_single,
+                texts,
+                preds,
+                reduced_embeddings,
+                output_dir,
+                single_cluster=True,
+            )
+
+            # Create visualization
+            create_visualization(embeddings, labels_single, output_dir, len(embeddings))
+
+            # Save clustered pickle
+            save_clustered_pickle(
+                original_data,
+                labels_single,
+                output_dir,
+                filename,
+                clustering_performed=False,
+            )
+
+            # Also save detailed skip report
+            skip_report = output_dir / f"clustering_quality_report_{filename}.txt"
             with open(skip_report, "w", encoding="utf-8") as f:
-                f.write(f"CLUSTERING SKIPPED FOR {filename}\n")
+                f.write(f"CLUSTERING QUALITY REPORT FOR {filename}\n")
                 f.write(f"{'=' * 50}\n\n")
                 f.write(
-                    f"Reason: Poor overall silhouette score ({overall_silhouette:.3f} < 0.5)\n"
+                    f"Poor overall silhouette score ({overall_silhouette:.3f} < 0.5)\n"
                 )
                 f.write(
-                    f"This indicates the data does not have clear cluster structure.\n\n"
+                    f"This indicates the data does not have clear cluster structure.\n"
+                )
+                f.write(
+                    f"All documents assigned to single cluster (cluster_id = 0)\n\n"
                 )
                 f.write(f"Dataset details:\n")
                 f.write(f"- Documents: {len(embeddings)}\n")
                 f.write(f"- Embedding dimension: {embeddings.shape[1]}\n")
                 f.write(f"- Reduced dimension: {reduced_embeddings.shape[1]}\n")
                 f.write(f"- Attempted clusters: {len(set(labels_no_noise))}\n")
+                f.write(f"- Final clusters: 1 (forced single cluster)\n")
 
-            return False
+            return "single_cluster_quality"
 
-        # Calculate per-cluster scores and generate outputs
+        # Successful clustering case
         cluster_silhouettes = calculate_cluster_silhouettes(
             reduced_embeddings, labels_no_noise
         )
@@ -255,17 +364,46 @@ def process_file(pickle_path, results_dir="hdbscan_results"):
             reduced_embeddings,
             output_dir,
             cluster_silhouettes,
+            single_cluster=False,
         )
-        create_visualization(embeddings, labels_no_noise, output_dir)
+        create_visualization(embeddings, labels_no_noise, output_dir, len(embeddings))
+        save_clustered_pickle(
+            original_data,
+            labels_no_noise,
+            output_dir,
+            filename,
+            clustering_performed=True,
+        )
 
-        return True
+        return "clustered"
 
-    except ValueError as e:
-        print(f"Skipping {filename}: {e}")
-        return False
     except Exception as e:
         print(f"Error processing {filename}: {e}")
-        return False
+
+        # Even in case of error, try to save with single cluster
+        try:
+            embeddings, texts, preds, original_data = load_data(pickle_path)
+            labels_error = np.zeros(len(embeddings), dtype=int)
+            save_clustered_pickle(
+                original_data,
+                labels_error,
+                output_dir,
+                filename,
+                clustering_performed=False,
+            )
+
+            # Save error report
+            error_report = output_dir / f"error_report_{filename}.txt"
+            with open(error_report, "w", encoding="utf-8") as f:
+                f.write(f"ERROR PROCESSING {filename}\n")
+                f.write(f"{'=' * 50}\n\n")
+                f.write(f"Error: {str(e)}\n")
+                f.write(f"All documents assigned to cluster 0 as fallback\n")
+                f.write(f"Documents: {len(embeddings)}\n")
+
+            return "error_saved"
+        except:
+            return "error_failed"
 
 
 def main():
@@ -282,28 +420,31 @@ def main():
     results_dir = f"hdbscan_results_c{UMAP_COMPONENTS}"
     Path(results_dir).mkdir(exist_ok=True)
 
-    successful = 0
-    skipped_quality = 0
-    skipped_size = 0
+    # Track results
+    results_count = {
+        "clustered": 0,
+        "single_cluster_small": 0,
+        "single_cluster_quality": 0,
+        "error_saved": 0,
+        "error_failed": 0,
+    }
 
     for pkl_file in pkl_files:
         result = process_file(pkl_file, results_dir)
-        if result is True:
-            successful += 1
-        elif result is False:
-            filename = Path(pkl_file).stem
-            skip_report = (
-                Path(results_dir) / filename / f"clustering_skipped_{filename}.txt"
-            )
-            if skip_report.exists():
-                skipped_quality += 1
-            else:
-                skipped_size += 1
+        if result in results_count:
+            results_count[result] += 1
 
-    print(f"\nCompleted: {successful}/{len(pkl_files)} files processed successfully")
-    print(f"Skipped due to poor quality: {skipped_quality}")
-    print(f"Skipped due to small size: {skipped_size}")
+    print(f"\n{'=' * 60}")
+    print(f"PROCESSING COMPLETE")
+    print(f"{'=' * 60}")
+    print(f"Total files processed: {len(pkl_files)}")
+    print(f"Successfully clustered: {results_count['clustered']}")
+    print(f"Single cluster (too small): {results_count['single_cluster_small']}")
+    print(f"Single cluster (poor quality): {results_count['single_cluster_quality']}")
+    print(f"Errors (but saved): {results_count['error_saved']}")
+    print(f"Complete failures: {results_count['error_failed']}")
     print(f"Results saved to: {results_dir}/")
+    print(f"\nALL FILES NOW HAVE CLUSTERED VERSIONS WITH cluster_id FIELD")
 
 
 if __name__ == "__main__":
