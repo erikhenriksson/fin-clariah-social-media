@@ -38,14 +38,12 @@ def reduce_dimensions(embeddings):
     print("Reducing dimensions with UMAP...")
 
     n_neighbors = min(30, len(embeddings) // 30)
-
     reducer = umap.UMAP(
         n_components=UMAP_COMPONENTS, n_neighbors=n_neighbors, min_dist=0.0
     )
-
     reduced_embeddings = reducer.fit_transform(embeddings)
-    print(f"Reduced to {reduced_embeddings.shape[1]}D")
 
+    print(f"Reduced to {reduced_embeddings.shape[1]}D")
     return reduced_embeddings
 
 
@@ -54,11 +52,9 @@ def cluster_documents(embeddings):
     print("Clustering with HDBSCAN...")
 
     min_cluster_size = len(embeddings) // 10
-
     clusterer = HDBSCAN(
         min_cluster_size=min_cluster_size, min_samples=1, cluster_selection_method="eom"
     )
-
     labels = clusterer.fit_predict(embeddings)
 
     n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
@@ -67,8 +63,7 @@ def cluster_documents(embeddings):
     print(
         f"Found {n_clusters} clusters with {n_noise} noise points ({n_noise / len(labels) * 100:.1f}%)"
     )
-
-    return labels, min_cluster_size
+    return labels
 
 
 def assign_noise_to_clusters(embeddings, labels):
@@ -80,14 +75,12 @@ def assign_noise_to_clusters(embeddings, labels):
 
     # Get cluster centroids
     unique_clusters = [c for c in set(labels) if c != -1]
-    centroids = []
-
-    for cluster_id in unique_clusters:
-        cluster_mask = labels == cluster_id
-        centroid = np.mean(embeddings[cluster_mask], axis=0)
-        centroids.append(centroid)
-
-    centroids = np.array(centroids)
+    centroids = np.array(
+        [
+            np.mean(embeddings[labels == cluster_id], axis=0)
+            for cluster_id in unique_clusters
+        ]
+    )
 
     # Assign noise points
     new_labels = labels.copy()
@@ -103,16 +96,13 @@ def assign_noise_to_clusters(embeddings, labels):
 
 
 def calculate_cluster_silhouettes(embeddings, labels):
-    """Calculate silhouette score for each individual cluster"""
+    """Calculate silhouette score for each cluster"""
     print("Calculating per-cluster silhouette scores...")
 
     unique_clusters = sorted([c for c in set(labels) if c != -1])
-    cluster_silhouettes = {}
-
-    # Get silhouette scores for all samples
     sample_silhouettes = silhouette_samples(embeddings, labels)
 
-    # Calculate average silhouette for each cluster
+    cluster_silhouettes = {}
     for cluster_id in unique_clusters:
         cluster_mask = labels == cluster_id
         cluster_silhouette = np.mean(sample_silhouettes[cluster_mask])
@@ -120,67 +110,6 @@ def calculate_cluster_silhouettes(embeddings, labels):
         print(f"Cluster {cluster_id}: silhouette = {cluster_silhouette:.3f}")
 
     return cluster_silhouettes
-
-
-def merge_low_quality_clusters(embeddings, labels, cluster_silhouettes, threshold=0.5):
-    """Merge clusters with silhouette scores <= threshold into a single cluster"""
-    print(f"Merging clusters with silhouette scores <= {threshold}...")
-
-    # Identify clusters to merge
-    clusters_to_merge = [
-        cluster_id
-        for cluster_id, score in cluster_silhouettes.items()
-        if score <= threshold
-    ]
-
-    clusters_to_keep = [
-        cluster_id
-        for cluster_id, score in cluster_silhouettes.items()
-        if score > threshold
-    ]
-
-    if not clusters_to_merge:
-        print("No clusters need merging - all have good silhouette scores!")
-        return labels, cluster_silhouettes
-
-    print(f"Merging {len(clusters_to_merge)} low-quality clusters: {clusters_to_merge}")
-    print(f"Keeping {len(clusters_to_keep)} high-quality clusters: {clusters_to_keep}")
-
-    # Create new labels
-    new_labels = labels.copy()
-
-    # Find the next available cluster ID for the merged cluster
-    max_cluster_id = max(set(labels)) if set(labels) else -1
-    merged_cluster_id = max_cluster_id + 1
-
-    # Merge low-quality clusters
-    for cluster_id in clusters_to_merge:
-        cluster_mask = labels == cluster_id
-        new_labels[cluster_mask] = merged_cluster_id
-
-    # Recalculate silhouette for the new merged cluster
-    updated_silhouettes = {}
-
-    # Keep scores for unchanged clusters
-    for cluster_id in clusters_to_keep:
-        updated_silhouettes[cluster_id] = cluster_silhouettes[cluster_id]
-
-    # Calculate score for merged cluster
-    if clusters_to_merge:
-        merged_mask = new_labels == merged_cluster_id
-        merged_silhouette = np.mean(
-            silhouette_samples(embeddings, new_labels)[merged_mask]
-        )
-        updated_silhouettes[merged_cluster_id] = merged_silhouette
-
-        print(
-            f"Merged cluster {merged_cluster_id}: silhouette = {merged_silhouette:.3f}"
-        )
-
-    n_final_clusters = len(set(new_labels))
-    print(f"Final result: {n_final_clusters} clusters after merging")
-
-    return new_labels, updated_silhouettes
 
 
 def create_visualization(embeddings, labels, output_dir):
@@ -225,8 +154,6 @@ def analyze_clusters(labels, texts, preds, embeddings, output_dir, cluster_silho
 
     unique_clusters = sorted(set(labels))
     n_clusters = len(unique_clusters)
-
-    # Calculate overall silhouette score
     sil_score = silhouette_score(embeddings, labels)
 
     # Save cluster analysis
@@ -234,14 +161,14 @@ def analyze_clusters(labels, texts, preds, embeddings, output_dir, cluster_silho
 
     with open(analysis_file, "w", encoding="utf-8") as f:
         f.write(f"HDBSCAN CLUSTER ANALYSIS\n")
-        f.write(f"={'=' * 40}\n\n")
+        f.write(f"{'=' * 40}\n\n")
         f.write(f"Total clusters: {n_clusters}\n")
         f.write(f"Overall silhouette score: {sil_score:.3f}\n\n")
 
         f.write(f"INDIVIDUAL CLUSTER SILHOUETTE SCORES:\n")
         f.write(f"{'-' * 40}\n")
         for cluster_id in unique_clusters:
-            cluster_score = cluster_silhouettes.get(cluster_id, "N/A")
+            cluster_score = cluster_silhouettes[cluster_id]
             cluster_size = np.sum(labels == cluster_id)
             f.write(
                 f"Cluster {cluster_id}: {cluster_score:.3f} (size: {cluster_size})\n"
@@ -250,7 +177,7 @@ def analyze_clusters(labels, texts, preds, embeddings, output_dir, cluster_silho
 
         for cluster_id in unique_clusters:
             members = np.where(labels == cluster_id)[0]
-            cluster_score = cluster_silhouettes.get(cluster_id, "N/A")
+            cluster_score = cluster_silhouettes[cluster_id]
 
             f.write(
                 f"\n--- Cluster {cluster_id} ({len(members)} documents, silhouette: {cluster_score:.3f}) ---\n"
@@ -273,52 +200,63 @@ def analyze_clusters(labels, texts, preds, embeddings, output_dir, cluster_silho
 
 def process_file(pickle_path, results_dir="hdbscan_results"):
     """Process a single pickle file through the complete pipeline"""
-
-    # Setup output directory
     filename = Path(pickle_path).stem
     output_dir = Path(results_dir) / filename
 
     print(f"\nProcessing {filename}...")
 
     try:
-        # Load data - this will raise ValueError if too small
+        # Load data
         embeddings, texts, preds = load_data(pickle_path)
-
-        # Only create output directory AFTER confirming data is valid
         output_dir.mkdir(parents=True, exist_ok=True)
         print(f"Output: {output_dir}")
 
-        # Reduce dimensions
+        # Process pipeline
         reduced_embeddings = reduce_dimensions(embeddings)
-
-        # Cluster
-        labels, min_cluster_size = cluster_documents(reduced_embeddings)
-
-        # Handle noise
+        labels = cluster_documents(reduced_embeddings)
         labels_no_noise = assign_noise_to_clusters(reduced_embeddings, labels)
 
-        # Calculate per-cluster silhouette scores
+        # Quality gate - check overall silhouette score
+        overall_silhouette = silhouette_score(reduced_embeddings, labels_no_noise)
+        print(f"Overall silhouette score: {overall_silhouette:.3f}")
+
+        if overall_silhouette < 0.5:
+            print(
+                f"Skipping {filename}: Poor clustering quality (silhouette = {overall_silhouette:.3f} < 0.5)"
+            )
+
+            # Save skip report
+            skip_report = output_dir / f"clustering_skipped_{filename}.txt"
+            with open(skip_report, "w", encoding="utf-8") as f:
+                f.write(f"CLUSTERING SKIPPED FOR {filename}\n")
+                f.write(f"{'=' * 50}\n\n")
+                f.write(
+                    f"Reason: Poor overall silhouette score ({overall_silhouette:.3f} < 0.5)\n"
+                )
+                f.write(
+                    f"This indicates the data does not have clear cluster structure.\n\n"
+                )
+                f.write(f"Dataset details:\n")
+                f.write(f"- Documents: {len(embeddings)}\n")
+                f.write(f"- Embedding dimension: {embeddings.shape[1]}\n")
+                f.write(f"- Reduced dimension: {reduced_embeddings.shape[1]}\n")
+                f.write(f"- Attempted clusters: {len(set(labels_no_noise))}\n")
+
+            return False
+
+        # Calculate per-cluster scores and generate outputs
         cluster_silhouettes = calculate_cluster_silhouettes(
             reduced_embeddings, labels_no_noise
         )
-
-        # Merge low-quality clusters
-        final_labels, final_silhouettes = merge_low_quality_clusters(
-            reduced_embeddings, labels_no_noise, cluster_silhouettes, threshold=0.5
-        )
-
-        # Analyze and save results
         analyze_clusters(
-            final_labels,
+            labels_no_noise,
             texts,
             preds,
             reduced_embeddings,
             output_dir,
-            final_silhouettes,
+            cluster_silhouettes,
         )
-
-        # Visualize
-        create_visualization(embeddings, final_labels, output_dir)
+        create_visualization(embeddings, labels_no_noise, output_dir)
 
         return True
 
@@ -332,7 +270,6 @@ def process_file(pickle_path, results_dir="hdbscan_results"):
 
 def main():
     """Process all pickle files in the directory"""
-
     pkl_directory = "../data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/sm/"
     pkl_files = glob.glob(os.path.join(pkl_directory, "*.pkl"))
 
@@ -346,11 +283,26 @@ def main():
     Path(results_dir).mkdir(exist_ok=True)
 
     successful = 0
+    skipped_quality = 0
+    skipped_size = 0
+
     for pkl_file in pkl_files:
-        if process_file(pkl_file, results_dir):
+        result = process_file(pkl_file, results_dir)
+        if result is True:
             successful += 1
+        elif result is False:
+            filename = Path(pkl_file).stem
+            skip_report = (
+                Path(results_dir) / filename / f"clustering_skipped_{filename}.txt"
+            )
+            if skip_report.exists():
+                skipped_quality += 1
+            else:
+                skipped_size += 1
 
     print(f"\nCompleted: {successful}/{len(pkl_files)} files processed successfully")
+    print(f"Skipped due to poor quality: {skipped_quality}")
+    print(f"Skipped due to small size: {skipped_size}")
     print(f"Results saved to: {results_dir}/")
 
 
