@@ -417,7 +417,7 @@ def main():
 
     print(f"Found {len(pkl_files)} files to process")
 
-    results_dir = f"hdbscan_results_c{UMAP_COMPONENTS}"
+    results_dir = f"hdbscan_results_finalc{UMAP_COMPONENTS}"
     Path(results_dir).mkdir(exist_ok=True)
 
     # Track results
