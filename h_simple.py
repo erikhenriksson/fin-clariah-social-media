@@ -40,40 +40,8 @@ g = ig.Graph(directed=False)
 g.add_vertices(embeddings_50d.shape[0])
 g.add_edges(list(zip(sources, targets)))
 
-# Grid search for resolutions that give k=2-8 clusters
-resolutions = np.logspace(-2, 1, 50)  # 0.01 to 10
-target_ks = list(range(2, 9))
-best_resolutions = {}
-all_results = {}
 
-for target_k in target_ks:
-    best_res = None
-    best_diff = float("inf")
-
-    for resolution in resolutions:
-        partition = leidenalg.find_partition(
-            g,
-            leidenalg.RBConfigurationVertexPartition,
-            resolution_parameter=resolution,
-            seed=42,
-        )
-        n_clusters = len(set(partition.membership))
-        diff = abs(n_clusters - target_k)
-
-        if diff < best_diff:
-            best_diff = diff
-            best_res = resolution
-
-    best_resolutions[target_k] = best_res
-
-# Run Leiden with best resolutions and calculate silhouette scores
-best_score = -1
-best_k = 2
-best_labels = None
-best_resolution = None
-
-for target_k in target_ks:
-    resolution = best_resolutions[target_k]
+def run_leiden(resolution):
     partition = leidenalg.find_partition(
         g,
         leidenalg.RBConfigurationVertexPartition,
@@ -81,21 +49,70 @@ for target_k in target_ks:
         seed=42,
     )
     labels = np.array(partition.membership)
-    actual_k = len(set(labels))
+    n_clusters = len(set(labels))
+    if n_clusters > 1:
+        return labels, n_clusters, silhouette_score(embeddings_50d, labels)
+    else:
+        return labels, n_clusters, -1
 
-    if actual_k > 1:
-        score = silhouette_score(embeddings_50d, labels)
-        all_results[target_k] = {
-            "resolution": resolution,
-            "actual_k": actual_k,
-            "silhouette": score,
-        }
 
-        if score > best_score:
-            best_score = score
-            best_k = target_k
-            best_labels = labels
-            best_resolution = resolution
+# Smart grid search - start coarse, then refine around best
+best_resolution = None
+best_score = -1
+best_labels = None
+best_k = None
+all_results = []
+
+# Coarse search
+coarse_resolutions = np.logspace(-2, 1, 20)  # 0.01 to 10
+for res in coarse_resolutions:
+    labels, k, score = run_leiden(res)
+    all_results.append((res, k, score))
+    if score > best_score:
+        best_score = score
+        best_resolution = res
+        best_labels = labels
+        best_k = k
+
+print(
+    f"Coarse search best: res={best_resolution:.4f}, k={best_k}, score={best_score:.4f}"
+)
+
+# Fine search around best
+search_range = best_resolution * 0.5  # +/- 50% around best
+fine_resolutions = np.linspace(
+    max(0.001, best_resolution - search_range), best_resolution + search_range, 30
+)
+
+for res in fine_resolutions:
+    if res in coarse_resolutions:  # Skip already tested
+        continue
+    labels, k, score = run_leiden(res)
+    all_results.append((res, k, score))
+    if score > best_score:
+        best_score = score
+        best_resolution = res
+        best_labels = labels
+        best_k = k
+
+print(
+    f"Fine search best: res={best_resolution:.4f}, k={best_k}, score={best_score:.4f}"
+)
+
+# Ultra-fine search around best
+search_range = best_resolution * 0.1  # +/- 10% around best
+ultra_fine_resolutions = np.linspace(
+    max(0.001, best_resolution - search_range), best_resolution + search_range, 20
+)
+
+for res in ultra_fine_resolutions:
+    labels, k, score = run_leiden(res)
+    all_results.append((res, k, score))
+    if score > best_score:
+        best_score = score
+        best_resolution = res
+        best_labels = labels
+        best_k = k
 
 # Create output directory
 output_dir = f"single_analyses/{filename_without_ext}"
@@ -107,7 +124,7 @@ scatter = plt.scatter(
     embeddings_2d[:, 0], embeddings_2d[:, 1], c=best_labels, cmap="tab10", alpha=0.6
 )
 plt.title(
-    f"UMAP 2D with {len(set(best_labels))} clusters (Leiden, silhouette: {best_score:.3f})"
+    f"UMAP 2D with {best_k} clusters (Leiden res={best_resolution:.4f}, silhouette: {best_score:.3f})"
 )
 plt.xlabel("UMAP 1")
 plt.ylabel("UMAP 2")
@@ -116,22 +133,22 @@ plt.tight_layout()
 plt.savefig(f"{output_dir}/umap_clusters.png", dpi=300, bbox_inches="tight")
 plt.close()
 
-# Save silhouette scores
+# Save all results sorted by silhouette score
 with open(f"{output_dir}/silhouette_scores.txt", "w") as f:
     f.write(
-        f"Overall best silhouette score: {best_score:.4f} (target_k={best_k}, resolution={best_resolution:.4f})\n\n"
+        f"Best result: resolution={best_resolution:.6f}, k={best_k}, silhouette={best_score:.4f}\n\n"
     )
-    f.write("Results by target k:\n")
-    for target_k, result in all_results.items():
-        marker = " <-- BEST" if target_k == best_k else ""
+    f.write("All results (top 20 by silhouette score):\n")
+    sorted_results = sorted(all_results, key=lambda x: x[2], reverse=True)
+    for i, (res, k, score) in enumerate(sorted_results[:20]):
+        marker = " <-- BEST" if res == best_resolution else ""
         f.write(
-            f"target_k={target_k}: resolution={result['resolution']:.4f}, actual_k={result['actual_k']}, silhouette={result['silhouette']:.4f}{marker}\n"
+            f"{i + 1}. resolution={res:.6f}, k={k}, silhouette={score:.4f}{marker}\n"
         )
 
 # Save text examples from each cluster
 with open(f"{output_dir}/cluster_examples.txt", "w") as f:
-    actual_k = len(set(best_labels))
-    for cluster_id in range(actual_k):
+    for cluster_id in range(best_k):
         cluster_indices = np.where(best_labels == cluster_id)[0]
         f.write(f"\n=== CLUSTER {cluster_id} ===\n")
         f.write(f"Size: {len(cluster_indices)} samples\n\n")
@@ -146,5 +163,5 @@ with open(f"{output_dir}/cluster_examples.txt", "w") as f:
 
 print(f"Analysis complete! Results saved in {output_dir}/")
 print(
-    f"Best clustering: target_k={best_k}, actual_k={len(set(best_labels))}, resolution={best_resolution:.4f}, silhouette={best_score:.4f}"
+    f"Final best: resolution={best_resolution:.6f}, k={best_k}, silhouette={best_score:.4f}"
 )
