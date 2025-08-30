@@ -1,11 +1,12 @@
+import gc
 import hashlib
 import os
 import pickle
 import sys
-import gc
 
 import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend to save memory
+
+matplotlib.use("Agg")  # Use non-interactive backend to save memory
 import matplotlib.pyplot as plt
 import numpy as np
 import umap
@@ -205,9 +206,9 @@ def get_or_compute_hdbscan(
 def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
     """Process a single pickle file and return results"""
     filename_without_ext = os.path.splitext(os.path.basename(pkl_file))[0]
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print(f"Processing file: {pkl_file}")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
 
     # Initialize variables to None for proper cleanup
     data = None
@@ -216,7 +217,7 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
     preds = None
     embeddings_50d = None
     embeddings_2d = None
-    
+
     try:
         # Load data
         print("Loading data...")
@@ -247,7 +248,9 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
         gc.collect()
 
         if n_samples < 10:
-            print(f"WARNING: Very small dataset ({n_samples} samples), results may not be meaningful")
+            print(
+                f"WARNING: Very small dataset ({n_samples} samples), results may not be meaningful"
+            )
 
         # Generate hash for embeddings to use as cache key
         embeddings_hash = get_embeddings_hash(embeddings)
@@ -266,12 +269,12 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
 
         # UMAP reduction to 2D (with caching)
         embeddings_2d = get_or_compute_umap(
-            embeddings, 
-            cache_dir, 
-            embeddings_hash, 
-            n_components=2, 
+            embeddings,
+            cache_dir,
+            embeddings_hash,
+            n_components=2,
             n_neighbors=min(15, n_samples - 1),  # Handle small datasets
-            min_dist=0.1
+            min_dist=0.1,
         )
         print("2D reduction complete")
 
@@ -291,10 +294,14 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
             if size >= min_samples_per_cluster:
                 valid_params.append((p, size))
             else:
-                print(f"Skipping {p}% ({size} samples) - below {min_samples_per_cluster} sample threshold")
+                print(
+                    f"Skipping {p}% ({size} samples) - below {min_samples_per_cluster} sample threshold"
+                )
 
         if not valid_params:
-            print(f"ERROR: No valid cluster sizes found! All percentages produce <{min_samples_per_cluster} samples.")
+            print(
+                f"ERROR: No valid cluster sizes found! All percentages produce <{min_samples_per_cluster} samples."
+            )
             return None
 
         percentages, min_cluster_sizes = zip(*valid_params)
@@ -333,7 +340,7 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
             # Check if all real clusters meet the minimum size requirement
             cluster_sizes = {}
             meets_size_requirement = True
-            
+
             if n_real_clusters > 0:
                 unique_labels = np.unique(labels)
                 for cluster_id in unique_labels:
@@ -342,7 +349,7 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
                         cluster_sizes[cluster_id] = cluster_size
                         if cluster_size < min_samples_per_cluster:
                             meets_size_requirement = False
-            
+
             # Create size summary for logging
             if cluster_sizes:
                 sizes_str = ", ".join([f"C{k}:{v}" for k, v in cluster_sizes.items()])
@@ -362,14 +369,18 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
                     cluster_sizes,
                 )
             )
-            
+
             status_marker = "✓" if meets_size_requirement else "✗"
             print(
                 f"  → {n_real_clusters} real clusters + {n_noise} noise points, DBCV: {dbcv_score:.4f}, CH: {ch_score:.2f} [{sizes_str}] {status_marker}"
             )
 
             # Only consider this result if it meets size requirements AND has good DBCV
-            if dbcv_score > best_score and n_real_clusters > 1 and meets_size_requirement:
+            if (
+                dbcv_score > best_score
+                and n_real_clusters > 1
+                and meets_size_requirement
+            ):
                 best_score = dbcv_score
                 best_labels = labels.copy()  # Make a copy to avoid reference issues
                 best_min_size = min_size
@@ -380,19 +391,37 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
             gc.collect()
 
         if best_labels is None:
-            print(f"\nWarning: No valid clustering found that meets size requirement (≥{min_samples_per_cluster} per cluster)!")
+            print(
+                f"\nWarning: No valid clustering found that meets size requirement (≥{min_samples_per_cluster} per cluster)!"
+            )
             print("Looking for fallback options...")
-            
+
             # Try to find results with valid clustering but relaxed size requirements
-            valid_clustering_results = [r for r in all_results if r[3] > 1]  # n_real_clusters > 1
-            
+            valid_clustering_results = [
+                r for r in all_results if r[3] > 1
+            ]  # n_real_clusters > 1
+
             if valid_clustering_results:
                 # Use the result with best DBCV among valid clusterings, even if size requirements aren't met
-                best_result = max(valid_clustering_results, key=lambda x: x[5])  # x[5] is dbcv_score
-                percentage, min_size, n_clusters, n_real_clusters, n_noise, dbcv_score, ch_score, meets_size_req, cluster_sizes = best_result
-                print(f"Using fallback (ignoring size requirement): {percentage}% ({min_size} samples) with {n_real_clusters} real clusters")
+                best_result = max(
+                    valid_clustering_results, key=lambda x: x[5]
+                )  # x[5] is dbcv_score
+                (
+                    percentage,
+                    min_size,
+                    n_clusters,
+                    n_real_clusters,
+                    n_noise,
+                    dbcv_score,
+                    ch_score,
+                    meets_size_req,
+                    cluster_sizes,
+                ) = best_result
+                print(
+                    f"Using fallback (ignoring size requirement): {percentage}% ({min_size} samples) with {n_real_clusters} real clusters"
+                )
                 print(f"Cluster sizes: {cluster_sizes}")
-                
+
                 # Get the cached result for the fallback parameters
                 fallback_result = get_or_compute_hdbscan(
                     cache_dir, embeddings_hash, embeddings_50d, min_size
@@ -403,9 +432,23 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
                 best_score = dbcv_score
             else:
                 # No valid clustering found at all - this was the original fallback
-                best_result = max(all_results, key=lambda x: x[3])  # x[3] is n_real_clusters  
-                percentage, min_size, n_clusters, n_real_clusters, n_noise, dbcv_score, ch_score, meets_size_req, cluster_sizes = best_result
-                print(f"Using final fallback: {percentage}% ({min_size} samples) with {n_real_clusters} real clusters")
+                best_result = max(
+                    all_results, key=lambda x: x[3]
+                )  # x[3] is n_real_clusters
+                (
+                    percentage,
+                    min_size,
+                    n_clusters,
+                    n_real_clusters,
+                    n_noise,
+                    dbcv_score,
+                    ch_score,
+                    meets_size_req,
+                    cluster_sizes,
+                ) = best_result
+                print(
+                    f"Using final fallback: {percentage}% ({min_size} samples) with {n_real_clusters} real clusters"
+                )
 
                 # Get the cached result for the fallback parameters
                 fallback_result = get_or_compute_hdbscan(
@@ -421,10 +464,14 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
             print(
                 f"\nDBCV threshold check: Best DBCV ({best_score:.4f}) < threshold ({dbcv_threshold})"
             )
-            print("Assigning all points to a single cluster due to poor clustering quality.")
+            print(
+                "Assigning all points to a single cluster due to poor clustering quality."
+            )
 
             # Create single cluster assignment (all points go to cluster 1, no noise)
-            best_labels = np.ones(n_samples, dtype=int)  # All points assigned to cluster 1
+            best_labels = np.ones(
+                n_samples, dtype=int
+            )  # All points assigned to cluster 1
             best_n_real_clusters = 1
             best_min_size = "N/A (single cluster)"
             best_score = "N/A (single cluster)"
@@ -464,7 +511,7 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
 
         # Plot 2D UMAP with clusters
         print("Creating UMAP visualization...")
-        
+
         # Create plot with explicit figure management
         fig, ax = plt.subplots(figsize=(10, 8))
 
@@ -490,12 +537,12 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
         plt.colorbar(scatter)
         plt.tight_layout()
         plt.savefig(f"{output_dir}/umap_clusters.png", dpi=300, bbox_inches="tight")
-        
+
         # Explicitly close the figure and clear matplotlib cache
         plt.close(fig)
-        plt.close('all')
+        plt.close("all")
         gc.collect()
-        
+
         print("UMAP plot saved")
 
         # Save all results sorted by DBCV score
@@ -505,10 +552,16 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
             f.write(f"Dataset size: {n_samples} samples\n")
             f.write(f"Embeddings hash: {embeddings_hash}\n")
             f.write(f"DBCV threshold: {dbcv_threshold}\n")
-            f.write(f"Minimum samples per cluster requirement: {min_samples_per_cluster}\n")
-            f.write(f"Clustering scheme: Noise = Cluster 0, Real clusters = 1, 2, 3, ...\n")
+            f.write(
+                f"Minimum samples per cluster requirement: {min_samples_per_cluster}\n"
+            )
+            f.write(
+                f"Clustering scheme: Noise = Cluster 0, Real clusters = 1, 2, 3, ...\n"
+            )
             if isinstance(best_score, str):
-                f.write(f"Best result: Single cluster (all samples), reason: {best_score}\n\n")
+                f.write(
+                    f"Best result: Single cluster (all samples), reason: {best_score}\n\n"
+                )
             else:
                 f.write(
                     f"Best result: min_cluster_size={best_min_size}, {best_n_real_clusters} real clusters, {n_noise_best} noise points, DBCV={best_score}, Calinski-Harabasz={best_ch_score}\n\n"
@@ -534,7 +587,11 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
             ) in enumerate(sorted_results):
                 marker = " <-- BEST" if min_size == best_min_size else ""
                 size_check = "PASS" if meets_size_req else "FAIL"
-                sizes_str = ",".join([f"C{k}:{v}" for k, v in cluster_sizes.items()]) if cluster_sizes else "none"
+                sizes_str = (
+                    ",".join([f"C{k}:{v}" for k, v in cluster_sizes.items()])
+                    if cluster_sizes
+                    else "none"
+                )
                 f.write(
                     f"{i + 1:4d} | {percentage:9.1f}% | {min_size:8d} | {n_clusters:13d} | {n_real_clusters:12d} | {n_noise:11d} | {dbcv_score:10.4f} | {ch_score:17.2f} | {size_check:10s} | {sizes_str:13s} |{marker}\n"
                 )
@@ -566,13 +623,13 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
 
         # Return summary for batch processing
         result_summary = {
-            'filename': pkl_file,
-            'n_samples': n_samples,
-            'n_real_clusters': best_n_real_clusters,
-            'n_noise': n_noise_best if 'n_noise_best' in locals() else 0,
-            'dbcv_score': best_score,
-            'ch_score': best_ch_score if 'best_ch_score' in locals() else 'N/A',
-            'output_dir': output_dir
+            "filename": pkl_file,
+            "n_samples": n_samples,
+            "n_real_clusters": best_n_real_clusters,
+            "n_noise": n_noise_best if "n_noise_best" in locals() else 0,
+            "dbcv_score": best_score,
+            "ch_score": best_ch_score if "best_ch_score" in locals() else "N/A",
+            "output_dir": output_dir,
         }
 
         print(f"Analysis complete for {pkl_file}! Results saved in {output_dir}/")
@@ -582,48 +639,40 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
             print(
                 f"Final best: min_cluster_size={best_min_size}, {best_n_real_clusters} real clusters, {n_noise_best} noise points, DBCV={best_score:.4f}, CH={best_ch_score:.2f}"
             )
-        
+
         return result_summary
 
     finally:
         # Aggressive cleanup of all variables
         print("Cleaning up memory...")
-        
+
         # Delete all large variables
         variables_to_delete = [
-            'data', 'embeddings', 'embeddings_50d', 'embeddings_2d', 
-            'texts', 'preds', 'best_labels', 'all_results'
+            "data",
+            "embeddings",
+            "embeddings_50d",
+            "embeddings_2d",
+            "texts",
+            "preds",
+            "best_labels",
+            "all_results",
         ]
-        
+
         for var_name in variables_to_delete:
             if var_name in locals():
                 del locals()[var_name]
-        
+
         # Force garbage collection
         gc.collect()
-        
-        # Clear matplotlib cache
-        plt.close('all')
-        if hasattr(plt, 'clf'):
-            plt.clf()
-        if hasattr(plt, 'cla'):
-            plt.cla()
-        
-        print("Memory cleanup complete")n_noise': n_noise_best if 'n_noise_best' in locals() else 0,
-        'dbcv_score': best_score,
-        'ch_score': best_ch_score if 'best_ch_score' in locals() else 'N/A',
-        'output_dir': output_dir
-    }
 
-    print(f"Analysis complete for {pkl_file}! Results saved in {output_dir}/")
-    if isinstance(best_score, str):  # Single cluster case
-        print(f"Final result: 1 cluster with all {n_samples} samples")
-    else:
-        print(
-            f"Final best: min_cluster_size={best_min_size}, {best_n_real_clusters} real clusters, {n_noise_best} noise points, DBCV={best_score:.4f}, CH={best_ch_score:.2f}"
-        )
-    
-    return result_summary
+        # Clear matplotlib cache
+        plt.close("all")
+        if hasattr(plt, "clf"):
+            plt.clf()
+        if hasattr(plt, "cla"):
+            plt.cla()
+
+        print("Memory cleanup complete")
 
 
 def main():
@@ -634,7 +683,7 @@ def main():
         sys.exit(1)
 
     pkl_files = sys.argv[1:]
-    
+
     # Validate files exist
     valid_files = []
     for pkl_file in pkl_files:
@@ -642,7 +691,7 @@ def main():
             valid_files.append(pkl_file)
         else:
             print(f"WARNING: File not found: {pkl_file}")
-    
+
     if not valid_files:
         print("ERROR: No valid pickle files found!")
         sys.exit(1)
@@ -660,11 +709,11 @@ def main():
     successful_results = []
     failed_files = []
 
-            for i, pkl_file in enumerate(valid_files, 1):
-        print(f"\n{'#'*80}")
+    for i, pkl_file in enumerate(valid_files, 1):
+        print(f"\n{'#' * 80}")
         print(f"PROCESSING FILE {i}/{len(valid_files)}: {pkl_file}")
-        print(f"{'#'*80}")
-        
+        print(f"{'#' * 80}")
+
         try:
             result = process_file(pkl_file, cache_dir)
             if result:
@@ -676,18 +725,18 @@ def main():
         except Exception as e:
             failed_files.append(pkl_file)
             print(f"✗ Error processing {pkl_file}: {e}")
-        
+
         # Force garbage collection between files
         print("Running inter-file garbage collection...")
         gc.collect()
-        
+
         # Clear any remaining matplotlib figures
-        plt.close('all')
+        plt.close("all")
 
     # Print summary
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print("BATCH PROCESSING SUMMARY")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
     print(f"Total files processed: {len(valid_files)}")
     print(f"Successful: {len(successful_results)}")
     print(f"Failed: {len(failed_files)}")
@@ -697,8 +746,14 @@ def main():
         print(f"{'File':<40} {'Samples':<8} {'Clusters':<8} {'Noise':<8} {'DBCV':<10}")
         print("-" * 80)
         for result in successful_results:
-            dbcv_str = f"{result['dbcv_score']:.4f}" if isinstance(result['dbcv_score'], (int, float)) else str(result['dbcv_score'])[:10]
-            print(f"{os.path.basename(result['filename']):<40} {result['n_samples']:<8} {result['n_real_clusters']:<8} {result['n_noise']:<8} {dbcv_str:<10}")
+            dbcv_str = (
+                f"{result['dbcv_score']:.4f}"
+                if isinstance(result["dbcv_score"], (int, float))
+                else str(result["dbcv_score"])[:10]
+            )
+            print(
+                f"{os.path.basename(result['filename']):<40} {result['n_samples']:<8} {result['n_real_clusters']:<8} {result['n_noise']:<8} {dbcv_str:<10}"
+            )
 
     if failed_files:
         print(f"\nFailed files:")
@@ -708,10 +763,14 @@ def main():
     # Print cache statistics
     if os.path.exists(cache_dir):
         umap_cache_files = [
-            f for f in os.listdir(cache_dir) if f.startswith("umap_") and f.endswith(".pkl")
+            f
+            for f in os.listdir(cache_dir)
+            if f.startswith("umap_") and f.endswith(".pkl")
         ]
         hdbscan_cache_files = [
-            f for f in os.listdir(cache_dir) if f.startswith("hdbscan_") and f.endswith(".pkl")
+            f
+            for f in os.listdir(cache_dir)
+            if f.startswith("hdbscan_") and f.endswith(".pkl")
         ]
         print(f"\nCache statistics:")
         print(f"UMAP cached reductions: {len(umap_cache_files)}")
