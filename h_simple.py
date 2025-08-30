@@ -24,7 +24,7 @@ texts = [row["text"] for row in data]
 preds = [row["preds"] for row in data]
 
 # UMAP reduction to 50D
-umap_50d = umap.UMAP(n_components=50, n_neighbors=30, min_dist=0.0, random_state=42)
+umap_50d = umap.UMAP(n_components=100, n_neighbors=30, min_dist=0.0, random_state=42)
 embeddings_50d = umap_50d.fit_transform(embeddings)
 
 # UMAP reduction to 2D (from original embeddings)
