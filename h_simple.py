@@ -86,6 +86,86 @@ def get_or_compute_umap(
     return reduced_embeddings
 
 
+def get_hdbscan_cache_filename(embeddings_hash, min_cluster_size):
+    """Generate cache filename for HDBSCAN results"""
+    return f"hdbscan_mcs{min_cluster_size}_{embeddings_hash}.pkl"
+
+
+def load_cached_hdbscan(cache_dir, embeddings_hash, min_cluster_size):
+    """Load cached HDBSCAN result if it exists"""
+    cache_file = os.path.join(
+        cache_dir, get_hdbscan_cache_filename(embeddings_hash, min_cluster_size)
+    )
+
+    if os.path.exists(cache_file):
+        print(f"Loading cached HDBSCAN result (min_cluster_size={min_cluster_size})")
+        with open(cache_file, "rb") as f:
+            return pickle.load(f)
+    return None
+
+
+def save_hdbscan_cache(cache_dir, embeddings_hash, min_cluster_size, result_data):
+    """Save HDBSCAN result to cache"""
+    cache_file = os.path.join(
+        cache_dir, get_hdbscan_cache_filename(embeddings_hash, min_cluster_size)
+    )
+
+    print(f"Saving HDBSCAN result to cache (min_cluster_size={min_cluster_size})")
+    with open(cache_file, "wb") as f:
+        pickle.dump(result_data, f)
+
+
+def get_or_compute_hdbscan(
+    cache_dir, embeddings_hash, embeddings_50d, min_cluster_size
+):
+    """Get HDBSCAN result from cache or compute it"""
+    # Try to load from cache first
+    cached_result = load_cached_hdbscan(cache_dir, embeddings_hash, min_cluster_size)
+    if cached_result is not None:
+        return cached_result
+
+    # Compute HDBSCAN clustering
+    print(f"Computing HDBSCAN (min_cluster_size={min_cluster_size})...")
+    clusterer = hdbscan.HDBSCAN(
+        min_cluster_size=min_cluster_size,
+        min_samples=1,  # Minimize noise
+        gen_min_span_tree=True,  # Required for DBCV calculation
+    )
+
+    initial_labels = clusterer.fit_predict(embeddings_50d)
+
+    # Reassign noise points to nearest clusters
+    labels = assign_noise_to_clusters(embeddings_50d, initial_labels)
+
+    # Calculate metrics
+    unique_labels = set(labels)
+    n_clusters = len(unique_labels)
+    n_reassigned = np.sum(initial_labels == -1)
+
+    if n_clusters > 1:
+        dbcv_score = clusterer.relative_validity_
+        ch_score = calinski_harabasz_score(embeddings_50d, labels)
+    else:
+        dbcv_score = -1
+        ch_score = -1
+
+    # Package result
+    result_data = {
+        "labels": labels,
+        "initial_labels": initial_labels,
+        "n_clusters": n_clusters,
+        "n_reassigned": n_reassigned,
+        "dbcv_score": dbcv_score,
+        "ch_score": ch_score,
+        "clusterer": clusterer,  # Save the clusterer object for DBCV access
+    }
+
+    # Save to cache
+    save_hdbscan_cache(cache_dir, embeddings_hash, min_cluster_size, result_data)
+
+    return result_data
+
+
 def assign_noise_to_clusters(embeddings, labels):
     """Assign noise points to their nearest cluster centroid"""
     # Find noise points
@@ -216,31 +296,16 @@ for i, (percentage, min_size) in enumerate(zip(percentages, min_cluster_sizes)):
         f"Testing {i + 1}/{len(min_cluster_sizes)}: min_cluster_size={min_size} ({percentage}%)"
     )
 
-    clusterer = hdbscan.HDBSCAN(
-        min_cluster_size=min_size,
-        min_samples=1,  # Minimize noise
-        gen_min_span_tree=True,  # Required for DBCV calculation
+    # Get HDBSCAN result from cache or compute it
+    result = get_or_compute_hdbscan(
+        cache_dir, embeddings_hash, embeddings_50d, min_size
     )
 
-    initial_labels = clusterer.fit_predict(embeddings_50d)
-
-    # Reassign noise points to nearest clusters
-    labels = assign_noise_to_clusters(embeddings_50d, initial_labels)
-
-    # Count clusters (should be no noise now)
-    unique_labels = set(labels)
-    n_clusters = len(unique_labels)
-    n_noise = np.sum(labels == -1)  # Should be 0 now
-    n_reassigned = np.sum(initial_labels == -1)  # Number of points that were reassigned
-
-    # Use DBCV (Density-Based Cluster Validation) - better for HDBSCAN
-    if n_clusters > 1:
-        dbcv_score = clusterer.relative_validity_  # DBCV score
-        # Calculate Calinski-Harabasz score on the final labels (without noise)
-        ch_score = calinski_harabasz_score(embeddings_50d, labels)
-    else:
-        dbcv_score = -1
-        ch_score = -1
+    labels = result["labels"]
+    n_clusters = result["n_clusters"]
+    n_reassigned = result["n_reassigned"]
+    dbcv_score = result["dbcv_score"]
+    ch_score = result["ch_score"]
 
     all_results.append(
         (percentage, min_size, n_clusters, n_reassigned, dbcv_score, ch_score)
@@ -264,26 +329,21 @@ if best_labels is None:
         f"Using fallback: {percentage}% ({min_size} samples) with {n_clusters} clusters"
     )
 
-    # Re-run with best parameters
-    clusterer = hdbscan.HDBSCAN(
-        min_cluster_size=min_size,
-        min_samples=1,
-        gen_min_span_tree=True,  # Required for DBCV calculation
+    # Get the cached result for the fallback parameters
+    fallback_result = get_or_compute_hdbscan(
+        cache_dir, embeddings_hash, embeddings_50d, min_size
     )
-    initial_labels = clusterer.fit_predict(embeddings_50d)
-    best_labels = assign_noise_to_clusters(embeddings_50d, initial_labels)
+    best_labels = fallback_result["labels"]
     best_min_size = min_size
     best_k = n_clusters
     best_score = dbcv_score
 
 # Calculate final scores for the best result
 best_ch_score = calinski_harabasz_score(embeddings_50d, best_labels)
-n_reassigned_best = sum(
-    1
-    for result in all_results
-    if result[1] == best_min_size
-    for n_reassigned in [result[3]]
-)[0]
+# Find the number of reassigned points for the best result
+n_reassigned_best = next(
+    result[3] for result in all_results if result[1] == best_min_size
+)
 
 print(
     f"\nBest result: min_cluster_size={best_min_size}, k={best_k}, DBCV={best_score:.4f}, CH={best_ch_score:.2f}"
@@ -301,7 +361,7 @@ plt.figure(figsize=(10, 8))
 # Color clusters
 colors = best_labels.copy()
 scatter = plt.scatter(
-    embeddings_2d[:, 0], embeddings_2d[:, 1], c=colors, cmap="tab10", alpha=0.6
+    embeddings_2d[:, 0], embeddings_2d[:, 1], c=colors, cmap="tab10", alpha=0.6, s=10
 )
 
 plt.title(
@@ -362,13 +422,20 @@ with open(f"{output_dir}/cluster_examples.txt", "w") as f:
             f.write(f"{i}. {text_clean}\n")
 
 # Print cache statistics
-cache_files = [
+umap_cache_files = [
     f for f in os.listdir(cache_dir) if f.startswith("umap_") and f.endswith(".pkl")
+]
+hdbscan_cache_files = [
+    f for f in os.listdir(cache_dir) if f.startswith("hdbscan_") and f.endswith(".pkl")
 ]
 print(f"\nCache statistics:")
 print(f"Cache directory: {cache_dir}")
-print(f"Total cached reductions: {len(cache_files)}")
-for cache_file in sorted(cache_files):
+print(f"UMAP cached reductions: {len(umap_cache_files)}")
+for cache_file in sorted(umap_cache_files):
+    file_size = os.path.getsize(os.path.join(cache_dir, cache_file)) / 1024 / 1024  # MB
+    print(f"  {cache_file} ({file_size:.1f} MB)")
+print(f"HDBSCAN cached results: {len(hdbscan_cache_files)}")
+for cache_file in sorted(hdbscan_cache_files):
     file_size = os.path.getsize(os.path.join(cache_dir, cache_file)) / 1024 / 1024  # MB
     print(f"  {cache_file} ({file_size:.1f} MB)")
 
