@@ -28,17 +28,15 @@ umap_50d = umap.UMAP(n_components=100, n_neighbors=30, min_dist=0.0, random_stat
 embeddings_50d = umap_50d.fit_transform(embeddings)
 
 # UMAP reduction to 2D (from original embeddings)
-umap_2d = umap.UMAP(n_components=2, n_neighbors=30, min_dist=0.0, random_state=42)
+umap_2d = umap.UMAP(n_components=2, n_neighbors=15, min_dist=0.1, random_state=42)
 embeddings_2d = umap_2d.fit_transform(embeddings)
 
 # Build k-NN graph for Leiden
+
 knn_graph = kneighbors_graph(
     embeddings_50d, n_neighbors=30, mode="connectivity", include_self=False
 )
-sources, targets = knn_graph.nonzero()
-g = ig.Graph(directed=False)
-g.add_vertices(embeddings_50d.shape[0])
-g.add_edges(list(zip(sources, targets)))
+g = ig.Graph.Adjacency(knn_graph.toarray().tolist(), mode="undirected")
 
 
 def run_leiden(resolution):
