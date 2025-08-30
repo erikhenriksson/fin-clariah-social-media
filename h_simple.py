@@ -316,6 +316,13 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
         dbcv_score = result["dbcv_score"]
         ch_score = result["ch_score"]
 
+        # Calculate actual cluster sizes for reporting
+        cluster_size_info = ""
+        if n_real_clusters > 1:
+            unique_real_clusters = [c for c in set(labels) if c > 0]
+            cluster_sizes = [np.sum(labels == c) for c in unique_real_clusters]
+            cluster_size_info = f" (sizes: {cluster_sizes})"
+
         all_results.append(
             (
                 percentage,
@@ -325,13 +332,29 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
                 n_noise,
                 dbcv_score,
                 ch_score,
+                cluster_size_info,  # Add cluster size info
             )
         )
         print(
-            f"  → {n_real_clusters} real clusters + {n_noise} noise points, DBCV: {dbcv_score:.4f}, CH: {ch_score:.2f}"
+            f"  → {n_real_clusters} real clusters + {n_noise} noise points, DBCV: {dbcv_score:.4f}, CH: {ch_score:.2f}{cluster_size_info}"
         )
 
-        if dbcv_score > best_score and n_real_clusters > 1:
+        # Check if all real clusters meet the minimum size requirement
+        cluster_sizes_valid = True
+        if n_real_clusters > 1:
+            unique_real_clusters = [
+                c for c in set(labels) if c > 0
+            ]  # Exclude noise (cluster 0)
+            for cluster_id in unique_real_clusters:
+                cluster_size = np.sum(labels == cluster_id)
+                if cluster_size < min_samples_per_cluster:
+                    cluster_sizes_valid = False
+                    print(
+                        f"    Cluster {cluster_id} has only {cluster_size} samples (< {min_samples_per_cluster} required)"
+                    )
+                    break
+
+        if dbcv_score > best_score and n_real_clusters > 1 and cluster_sizes_valid:
             best_score = dbcv_score
             best_labels = labels
             best_min_size = min_size
@@ -458,21 +481,38 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
             "Rank | Percentage | Min_Size | Total_Clusters | Real_Clusters | Noise_Points | DBCV Score | Calinski-Harabasz | Notes\n"
         )
         f.write("-" * 120 + "\n")
+        # Update to handle the new cluster_size_info field
         sorted_results = sorted(
             all_results, key=lambda x: x[5], reverse=True
         )  # Sort by DBCV (index 5)
-        for i, (
-            percentage,
-            min_size,
-            n_clusters,
-            n_real_clusters,
-            n_noise,
-            dbcv_score,
-            ch_score,
-        ) in enumerate(sorted_results):
+        for i, result in enumerate(sorted_results):
+            if len(result) == 8:  # New format with cluster_size_info
+                (
+                    percentage,
+                    min_size,
+                    n_clusters,
+                    n_real_clusters,
+                    n_noise,
+                    dbcv_score,
+                    ch_score,
+                    cluster_size_info,
+                ) = result
+            else:  # Old format for backward compatibility
+                (
+                    percentage,
+                    min_size,
+                    n_clusters,
+                    n_real_clusters,
+                    n_noise,
+                    dbcv_score,
+                    ch_score,
+                ) = result
+                cluster_size_info = ""
+
             marker = " <-- BEST" if min_size == best_min_size else ""
+            size_info = cluster_size_info if cluster_size_info else ""
             f.write(
-                f"{i + 1:4d} | {percentage:9.1f}% | {min_size:8d} | {n_clusters:13d} | {n_real_clusters:12d} | {n_noise:11d} | {dbcv_score:10.4f} | {ch_score:17.2f} |{marker}\n"
+                f"{i + 1:4d} | {percentage:9.1f}% | {min_size:8d} | {n_clusters:13d} | {n_real_clusters:12d} | {n_noise:11d} | {dbcv_score:10.4f} | {ch_score:17.2f} |{marker}{size_info}\n"
             )
 
     # Save text examples from each cluster
