@@ -95,6 +95,12 @@ def assign_noise_to_clusters(embeddings, labels):
 
     # Calculate cluster centroids
     unique_clusters = np.unique(labels[labels != -1])
+
+    # If there are no clusters (all noise), assign all points to cluster 0
+    if len(unique_clusters) == 0:
+        new_labels = np.zeros_like(labels)
+        return new_labels
+
     centroids = []
     for cluster in unique_clusters:
         cluster_mask = labels == cluster
@@ -103,14 +109,25 @@ def assign_noise_to_clusters(embeddings, labels):
 
     centroids = np.array(centroids)
 
+    # Ensure centroids is 2D even with single cluster
+    if centroids.ndim == 1:
+        centroids = centroids.reshape(1, -1)
+
     # For each noise point, find nearest centroid
     noise_points = embeddings[noise_mask]
-    distances = np.sqrt(
-        ((noise_points[:, np.newaxis, :] - centroids[np.newaxis, :, :]) ** 2).sum(
-            axis=2
+
+    # Handle single cluster case
+    if len(unique_clusters) == 1:
+        # All noise points go to the single cluster
+        nearest_clusters = np.full(len(noise_points), unique_clusters[0])
+    else:
+        # Calculate distances to all centroids
+        distances = np.sqrt(
+            ((noise_points[:, np.newaxis, :] - centroids[np.newaxis, :, :]) ** 2).sum(
+                axis=2
+            )
         )
-    )
-    nearest_clusters = unique_clusters[np.argmin(distances, axis=1)]
+        nearest_clusters = unique_clusters[np.argmin(distances, axis=1)]
 
     # Assign noise points to nearest clusters
     new_labels = labels.copy()
