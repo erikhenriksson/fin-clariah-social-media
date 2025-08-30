@@ -260,7 +260,8 @@ embeddings_2d = get_or_compute_umap(
 print("2D reduction complete")
 
 # Define min_cluster_size values as percentages of dataset
-percentages = [2.5, 5.0, 7.5, 10.0, 12.5, 15.0, 17.5, 20.0]
+# percentages = [2.5, 5.0, 7.5, 10.0, 12.5, 15.0, 17.5, 20.0]
+percentages = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
 min_cluster_sizes = [max(2, int(n_samples * p / 100)) for p in percentages]
 
 # Filter out cluster sizes that would result in fewer than 100 examples per cluster
