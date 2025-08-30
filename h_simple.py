@@ -247,7 +247,7 @@ embeddings_50d = get_or_compute_umap(
     embeddings,
     cache_dir,
     embeddings_hash,
-    n_components=200,
+    n_components=50,
     n_neighbors=30,
     min_dist=0.0,
 )
