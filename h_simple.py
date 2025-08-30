@@ -199,6 +199,24 @@ def get_or_compute_hdbscan(
     return result_data
 
 
+def calculate_test_parameters(n_samples, min_absolute_size=100, min_percentage=0.02):
+    """Calculate min_cluster_size values to test based on number of clusters k"""
+    min_cluster_size = max(min_absolute_size, int(n_samples * min_percentage))
+    max_k = n_samples // min_cluster_size
+
+    if max_k < 2:
+        return []
+
+    # Test k=2,3,4... up to max_k and convert to min_cluster_size values
+    min_cluster_sizes = []
+    for k in range(2, max_k + 1):
+        min_size = n_samples // k
+        if min_size >= min_cluster_size:
+            min_cluster_sizes.append(min_size)
+
+    return min_cluster_sizes
+
+
 def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
     """Process a single pickle file and return results"""
     filename_without_ext = os.path.splitext(os.path.basename(pkl_file))[0]
@@ -261,24 +279,12 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
     )
     print("2D reduction complete")
 
-    # Define min_cluster_size values as percentages of dataset
-    percentages = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20]
-    min_cluster_sizes = [max(2, int(n_samples * p / 100)) for p in percentages]
+    # Calculate test parameters using new approach
+    min_cluster_sizes = calculate_test_parameters(n_samples)
 
-    # Filter out cluster sizes that would result in fewer than 100 examples per cluster
-    min_samples_per_cluster = 100
-    valid_params = []
-    for p, size in zip(percentages, min_cluster_sizes):
-        if size >= min_samples_per_cluster:
-            valid_params.append((p, size))
-        else:
-            print(
-                f"Skipping {p}% ({size} samples) - below {min_samples_per_cluster} sample threshold"
-            )
-
-    if not valid_params:
+    if not min_cluster_sizes:
         print(
-            f"ERROR: No valid cluster sizes found! Dataset too small ({n_samples} samples) for 100+ member clusters."
+            f"ERROR: Dataset too small ({n_samples} samples) - cannot create meaningful clusters."
         )
         print("Assigning all points to a single cluster.")
 
@@ -296,9 +302,7 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
         # Create a simple single-cluster visualization
         plt.figure(figsize=(10, 8))
         plt.scatter(embeddings_2d[:, 0], embeddings_2d[:, 1], c="blue", alpha=0.6)
-        plt.title(
-            f"Single cluster - Dataset too small ({n_samples} samples < 200 required for 2×100)"
-        )
+        plt.title(f"Single cluster - Dataset too small ({n_samples} samples)")
         plt.xlabel("UMAP 1")
         plt.ylabel("UMAP 2")
         plt.tight_layout()
@@ -310,7 +314,7 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
             f.write(f"Dataset: {pkl_file}\n")
             f.write(f"Dataset size: {n_samples} samples\n")
             f.write(
-                f"Result: Single cluster (dataset too small for 100+ member clusters)\n"
+                f"Result: Single cluster (dataset too small for meaningful clustering)\n"
             )
 
         # Save examples
@@ -334,13 +338,10 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
             "output_dir": output_dir,
         }
 
-    percentages, min_cluster_sizes = zip(*valid_params)
-    percentages = list(percentages)
-    min_cluster_sizes = list(min_cluster_sizes)
-
     print(f"\nTesting {len(min_cluster_sizes)} different min_cluster_size values:")
-    for p, size in zip(percentages, min_cluster_sizes):
-        print(f"  {p}% = {size} samples")
+    for i, min_size in enumerate(min_cluster_sizes):
+        k = n_samples // min_size
+        print(f"  k={k}: min_cluster_size={min_size}")
 
     # Test different min_cluster_size values
     best_score = -1
@@ -350,9 +351,10 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
     all_results = []
 
     print("\nRunning HDBSCAN with different min_cluster_size values...")
-    for i, (percentage, min_size) in enumerate(zip(percentages, min_cluster_sizes)):
+    for i, min_size in enumerate(min_cluster_sizes):
+        k = n_samples // min_size
         print(
-            f"Testing {i + 1}/{len(min_cluster_sizes)}: min_cluster_size={min_size} ({percentage}%)"
+            f"Testing {i + 1}/{len(min_cluster_sizes)}: k={k}, min_cluster_size={min_size}"
         )
 
         # Get HDBSCAN result from cache or compute it
@@ -376,36 +378,21 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
 
         all_results.append(
             (
-                percentage,
+                k,
                 min_size,
                 n_clusters,
                 n_real_clusters,
                 n_noise,
                 dbcv_score,
                 ch_score,
-                cluster_size_info,  # Add cluster size info
+                cluster_size_info,
             )
         )
         print(
             f"  → {n_real_clusters} real clusters + {n_noise} noise points, DBCV: {dbcv_score:.4f}, CH: {ch_score:.2f}{cluster_size_info}"
         )
 
-        # Check if all real clusters meet the minimum size requirement
-        cluster_sizes_valid = True
-        if n_real_clusters > 1:
-            unique_real_clusters = [
-                c for c in set(labels) if c > 0
-            ]  # Exclude noise (cluster 0)
-            for cluster_id in unique_real_clusters:
-                cluster_size = np.sum(labels == cluster_id)
-                if cluster_size < min_samples_per_cluster:
-                    cluster_sizes_valid = False
-                    print(
-                        f"    Cluster {cluster_id} has only {cluster_size} samples (< {min_samples_per_cluster} required)"
-                    )
-                    break
-
-        if dbcv_score > best_score and n_real_clusters > 1 and cluster_sizes_valid:
+        if dbcv_score > best_score and n_real_clusters > 1:
             best_score = dbcv_score
             best_labels = labels
             best_min_size = min_size
@@ -416,7 +403,7 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
         # Use the result with most real clusters as fallback
         best_result = max(all_results, key=lambda x: x[3])  # x[3] is n_real_clusters
         (
-            percentage,
+            k,
             min_size,
             n_clusters,
             n_real_clusters,
@@ -425,7 +412,7 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
             ch_score,
         ) = best_result
         print(
-            f"Using fallback: {percentage}% ({min_size} samples) with {n_real_clusters} real clusters"
+            f"Using fallback: k={k} (min_cluster_size={min_size}) with {n_real_clusters} real clusters"
         )
 
         # Get the cached result for the fallback parameters
@@ -529,41 +516,29 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
             )
         f.write("All results (sorted by DBCV score):\n")
         f.write(
-            "Rank | Percentage | Min_Size | Total_Clusters | Real_Clusters | Noise_Points | DBCV Score | Calinski-Harabasz | Notes\n"
+            "Rank | K_clusters | Min_Size | Total_Clusters | Real_Clusters | Noise_Points | DBCV Score | Calinski-Harabasz | Notes\n"
         )
         f.write("-" * 120 + "\n")
-        # Update to handle the new cluster_size_info field
+
         sorted_results = sorted(
             all_results, key=lambda x: x[5], reverse=True
         )  # Sort by DBCV (index 5)
         for i, result in enumerate(sorted_results):
-            if len(result) == 8:  # New format with cluster_size_info
-                (
-                    percentage,
-                    min_size,
-                    n_clusters,
-                    n_real_clusters,
-                    n_noise,
-                    dbcv_score,
-                    ch_score,
-                    cluster_size_info,
-                ) = result
-            else:  # Old format for backward compatibility
-                (
-                    percentage,
-                    min_size,
-                    n_clusters,
-                    n_real_clusters,
-                    n_noise,
-                    dbcv_score,
-                    ch_score,
-                ) = result
-                cluster_size_info = ""
+            (
+                k,
+                min_size,
+                n_clusters,
+                n_real_clusters,
+                n_noise,
+                dbcv_score,
+                ch_score,
+                cluster_size_info,
+            ) = result
 
             marker = " <-- BEST" if min_size == best_min_size else ""
             size_info = cluster_size_info if cluster_size_info else ""
             f.write(
-                f"{i + 1:4d} | {percentage:9.1f}% | {min_size:8d} | {n_clusters:13d} | {n_real_clusters:12d} | {n_noise:11d} | {dbcv_score:10.4f} | {ch_score:17.2f} |{marker}{size_info}\n"
+                f"{i + 1:4d} | {k:10d} | {min_size:8d} | {n_clusters:13d} | {n_real_clusters:12d} | {n_noise:11d} | {dbcv_score:10.4f} | {ch_score:17.2f} |{marker}{size_info}\n"
             )
 
     # Save text examples from each cluster
