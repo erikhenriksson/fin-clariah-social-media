@@ -6,7 +6,8 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 import umap
-from sklearn.metrics import silhouette_score
+from sklearn.metrics import calinski_harabasz_score, silhouette_score
+from sklearn.neighbors import NearestNeighbors
 
 import hdbscan
 
@@ -85,6 +86,39 @@ def get_or_compute_umap(
     return reduced_embeddings
 
 
+def assign_noise_to_clusters(embeddings, labels):
+    """Assign noise points to their nearest cluster centroid"""
+    # Find noise points
+    noise_mask = labels == -1
+    if not np.any(noise_mask):
+        return labels  # No noise points to reassign
+
+    # Calculate cluster centroids
+    unique_clusters = np.unique(labels[labels != -1])
+    centroids = []
+    for cluster in unique_clusters:
+        cluster_mask = labels == cluster
+        centroid = np.mean(embeddings[cluster_mask], axis=0)
+        centroids.append(centroid)
+
+    centroids = np.array(centroids)
+
+    # For each noise point, find nearest centroid
+    noise_points = embeddings[noise_mask]
+    distances = np.sqrt(
+        ((noise_points[:, np.newaxis, :] - centroids[np.newaxis, :, :]) ** 2).sum(
+            axis=2
+        )
+    )
+    nearest_clusters = unique_clusters[np.argmin(distances, axis=1)]
+
+    # Assign noise points to nearest clusters
+    new_labels = labels.copy()
+    new_labels[noise_mask] = nearest_clusters
+
+    return new_labels
+
+
 # Get pickle file from command line
 pkl_file = sys.argv[1]
 filename_without_ext = os.path.splitext(os.path.basename(pkl_file))[0]
@@ -129,8 +163,24 @@ embeddings_2d = get_or_compute_umap(
 print("2D reduction complete")
 
 # Define min_cluster_size values as percentages of dataset
-percentages = [0.5, 1.0, 2.0, 3.0, 5.0, 7.5, 10.0, 15.0]
+percentages = [2.5, 5.0, 7.5, 10.0, 12.5, 15.0, 17.5, 20.0]
 min_cluster_sizes = [max(2, int(n_samples * p / 100)) for p in percentages]
+
+# Filter out cluster sizes that would result in fewer than 100 examples per cluster
+valid_params = []
+for p, size in zip(percentages, min_cluster_sizes):
+    if size >= 100:
+        valid_params.append((p, size))
+    else:
+        print(f"Skipping {p}% ({size} samples) - below 100 sample threshold")
+
+if not valid_params:
+    print("ERROR: No valid cluster sizes found! All percentages produce <100 samples.")
+    sys.exit(1)
+
+percentages, min_cluster_sizes = zip(*valid_params)
+percentages = list(percentages)
+min_cluster_sizes = list(min_cluster_sizes)
 
 print(f"\nTesting {len(min_cluster_sizes)} different min_cluster_size values:")
 for p, size in zip(percentages, min_cluster_sizes):
@@ -155,24 +205,35 @@ for i, (percentage, min_size) in enumerate(zip(percentages, min_cluster_sizes)):
         gen_min_span_tree=True,  # Required for DBCV calculation
     )
 
-    labels = clusterer.fit_predict(embeddings_50d)
+    initial_labels = clusterer.fit_predict(embeddings_50d)
 
-    # Count clusters (excluding noise points labeled as -1)
+    # Reassign noise points to nearest clusters
+    labels = assign_noise_to_clusters(embeddings_50d, initial_labels)
+
+    # Count clusters (should be no noise now)
     unique_labels = set(labels)
-    n_clusters = len(unique_labels) - (1 if -1 in unique_labels else 0)
-    n_noise = np.sum(labels == -1)
+    n_clusters = len(unique_labels)
+    n_noise = np.sum(labels == -1)  # Should be 0 now
+    n_reassigned = np.sum(initial_labels == -1)  # Number of points that were reassigned
 
     # Use DBCV (Density-Based Cluster Validation) - better for HDBSCAN
     if n_clusters > 1:
-        score = clusterer.relative_validity_  # DBCV score
+        dbcv_score = clusterer.relative_validity_  # DBCV score
+        # Calculate Calinski-Harabasz score on the final labels (without noise)
+        ch_score = calinski_harabasz_score(embeddings_50d, labels)
     else:
-        score = -1
+        dbcv_score = -1
+        ch_score = -1
 
-    all_results.append((percentage, min_size, n_clusters, n_noise, score))
-    print(f"  → {n_clusters} clusters, {n_noise} noise points, DBCV: {score:.4f}")
+    all_results.append(
+        (percentage, min_size, n_clusters, n_reassigned, dbcv_score, ch_score)
+    )
+    print(
+        f"  → {n_clusters} clusters, {n_reassigned} points reassigned from noise, DBCV: {dbcv_score:.4f}, CH: {ch_score:.2f}"
+    )
 
-    if score > best_score and n_clusters > 1:
-        best_score = score
+    if dbcv_score > best_score and n_clusters > 1:
+        best_score = dbcv_score
         best_labels = labels
         best_min_size = min_size
         best_k = n_clusters
@@ -181,7 +242,7 @@ if best_labels is None:
     print("\nWarning: No valid clustering found! All results had ≤1 cluster.")
     # Use the result with most clusters as fallback
     best_result = max(all_results, key=lambda x: x[2])
-    percentage, min_size, n_clusters, n_noise, score = best_result
+    percentage, min_size, n_clusters, n_reassigned, dbcv_score, ch_score = best_result
     print(
         f"Using fallback: {percentage}% ({min_size} samples) with {n_clusters} clusters"
     )
@@ -190,16 +251,25 @@ if best_labels is None:
     clusterer = hdbscan.HDBSCAN(
         min_cluster_size=min_size,
         min_samples=1,
-        cluster_selection_epsilon=0.0,
         gen_min_span_tree=True,  # Required for DBCV calculation
     )
-    best_labels = clusterer.fit_predict(embeddings_50d)
+    initial_labels = clusterer.fit_predict(embeddings_50d)
+    best_labels = assign_noise_to_clusters(embeddings_50d, initial_labels)
     best_min_size = min_size
     best_k = n_clusters
-    best_score = score
+    best_score = dbcv_score
+
+# Calculate final scores for the best result
+best_ch_score = calinski_harabasz_score(embeddings_50d, best_labels)
+n_reassigned_best = sum(
+    1
+    for result in all_results
+    if result[1] == best_min_size
+    for n_reassigned in [result[3]]
+)[0]
 
 print(
-    f"\nBest result: min_cluster_size={best_min_size}, k={best_k}, DBCV={best_score:.4f}"
+    f"\nBest result: min_cluster_size={best_min_size}, k={best_k}, DBCV={best_score:.4f}, CH={best_ch_score:.2f}"
 )
 
 # Create output directory
@@ -211,15 +281,14 @@ print(f"Saving results to {output_dir}/")
 print("Creating UMAP visualization...")
 plt.figure(figsize=(10, 8))
 
-# Color noise points differently
+# Color clusters
 colors = best_labels.copy()
 scatter = plt.scatter(
     embeddings_2d[:, 0], embeddings_2d[:, 1], c=colors, cmap="tab10", alpha=0.6
 )
 
-n_noise = np.sum(best_labels == -1)
 plt.title(
-    f"UMAP 2D with {best_k} clusters + {n_noise} noise (HDBSCAN min_size={best_min_size}, DBCV: {best_score:.3f})"
+    f"UMAP 2D with {best_k} clusters (HDBSCAN min_size={best_min_size}, DBCV: {best_score:.3f})"
 )
 plt.xlabel("UMAP 1")
 plt.ylabel("UMAP 2")
@@ -229,39 +298,37 @@ plt.savefig(f"{output_dir}/umap_clusters.png", dpi=300, bbox_inches="tight")
 plt.close()
 print("UMAP plot saved")
 
-# Save all results sorted by silhouette score
+# Save all results sorted by DBCV score
 print("Saving results summary...")
 with open(f"{output_dir}/hdbscan_results.txt", "w") as f:
     f.write(f"Dataset size: {n_samples} samples\n")
     f.write(f"Embeddings hash: {embeddings_hash}\n")
     f.write(
-        f"Best result: min_cluster_size={best_min_size}, k={best_k}, DBCV={best_score:.4f}\n\n"
+        f"Best result: min_cluster_size={best_min_size}, k={best_k}, DBCV={best_score:.4f}, Calinski-Harabasz={best_ch_score:.2f}\n\n"
     )
     f.write("All results (sorted by DBCV score):\n")
+    f.write(
+        "Rank | Percentage | Min_Size | Clusters | Reassigned | DBCV Score | Calinski-Harabasz | Notes\n"
+    )
+    f.write("-" * 95 + "\n")
     sorted_results = sorted(all_results, key=lambda x: x[4], reverse=True)
-    for i, (percentage, min_size, n_clusters, n_noise, score) in enumerate(
-        sorted_results
-    ):
+    for i, (
+        percentage,
+        min_size,
+        n_clusters,
+        n_reassigned,
+        dbcv_score,
+        ch_score,
+    ) in enumerate(sorted_results):
         marker = " <-- BEST" if min_size == best_min_size else ""
         f.write(
-            f"{i + 1}. {percentage}% ({min_size} samples): {n_clusters} clusters, {n_noise} noise, DBCV={score:.4f}{marker}\n"
+            f"{i + 1:4d} | {percentage:9.1f}% | {min_size:8d} | {n_clusters:8d} | {n_reassigned:10d} | {dbcv_score:10.4f} | {ch_score:17.2f} |{marker}\n"
         )
 
 # Save text examples from each cluster
 print("Saving cluster examples...")
 with open(f"{output_dir}/cluster_examples.txt", "w") as f:
-    # Handle noise points first
-    noise_indices = np.where(best_labels == -1)[0]
-    if len(noise_indices) > 0:
-        f.write(f"\n=== NOISE POINTS ===\n")
-        f.write(f"Size: {len(noise_indices)} samples\n\n")
-        sample_indices = np.random.choice(
-            noise_indices, min(10, len(noise_indices)), replace=False
-        )
-        for i, idx in enumerate(sample_indices, 1):
-            f.write(f"{i}. {texts[idx]}\n")
-
-    # Handle regular clusters
+    # Handle regular clusters (no noise points now)
     for cluster_id in range(best_k):
         cluster_indices = np.where(best_labels == cluster_id)[0]
         f.write(f"\n=== CLUSTER {cluster_id} ===\n")
@@ -273,7 +340,9 @@ with open(f"{output_dir}/cluster_examples.txt", "w") as f:
         )
 
         for i, idx in enumerate(sample_indices, 1):
-            f.write(f"{i}. {texts[idx]}\n")
+            # Convert actual newlines to literal \n characters
+            text_clean = texts[idx].replace("\n", "\\n").replace("\r", "\\r")
+            f.write(f"{i}. {text_clean}\n")
 
 # Print cache statistics
 cache_files = [
@@ -288,8 +357,6 @@ for cache_file in sorted(cache_files):
 
 print(f"\nAnalysis complete! Results saved in {output_dir}/")
 print(
-    f"Final best: min_cluster_size={best_min_size}, k={best_k}, DBCV={best_score:.4f}"
+    f"Final best: min_cluster_size={best_min_size}, k={best_k}, DBCV={best_score:.4f}, CH={best_ch_score:.2f}"
 )
-print(
-    f"Noise points: {np.sum(best_labels == -1)}/{n_samples} ({100 * np.sum(best_labels == -1) / n_samples:.1f}%)"
-)
+print(f"No noise points in final clustering (all reassigned to nearest clusters)")
