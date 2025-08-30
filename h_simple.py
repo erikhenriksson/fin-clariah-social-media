@@ -290,6 +290,9 @@ best_min_size = None
 best_k = None
 all_results = []
 
+# DBCV threshold - if best DBCV is below this, assign everything to single cluster
+DBCV_THRESHOLD = 0.3  # Adjust this threshold as needed
+
 print("\nRunning HDBSCAN with different min_cluster_size values...")
 for i, (percentage, min_size) in enumerate(zip(percentages, min_cluster_sizes)):
     print(
@@ -338,16 +341,35 @@ if best_labels is None:
     best_k = n_clusters
     best_score = dbcv_score
 
-# Calculate final scores for the best result
-best_ch_score = calinski_harabasz_score(embeddings_50d, best_labels)
-# Find the number of reassigned points for the best result
-n_reassigned_best = next(
-    result[3] for result in all_results if result[1] == best_min_size
-)
+# Check if best DBCV score is below threshold
+if best_score < DBCV_THRESHOLD:
+    print(
+        f"\nDBCV threshold check: Best DBCV ({best_score:.4f}) < threshold ({DBCV_THRESHOLD})"
+    )
+    print("Assigning all points to a single cluster due to poor clustering quality.")
 
-print(
-    f"\nBest result: min_cluster_size={best_min_size}, k={best_k}, DBCV={best_score:.4f}, CH={best_ch_score:.2f}"
-)
+    # Create single cluster assignment
+    best_labels = np.zeros(n_samples, dtype=int)  # All points assigned to cluster 0
+    best_k = 1
+    best_min_size = "N/A (single cluster)"
+    best_score = "N/A (single cluster)"
+    n_reassigned_best = 0
+
+    # Calculate CH score for single cluster (will be undefined, but we'll note it)
+    best_ch_score = "N/A (single cluster)"
+
+    print(f"Final result: 1 cluster with all {n_samples} samples")
+else:
+    # Calculate final scores for the best result
+    best_ch_score = calinski_harabasz_score(embeddings_50d, best_labels)
+    # Find the number of reassigned points for the best result
+    n_reassigned_best = next(
+        result[3] for result in all_results if result[1] == best_min_size
+    )
+
+    print(
+        f"\nBest result: min_cluster_size={best_min_size}, k={best_k}, DBCV={best_score:.4f}, CH={best_ch_score:.2f}"
+    )
 
 # Create output directory
 output_dir = f"single_analyses/{filename_without_ext}"
@@ -361,7 +383,7 @@ plt.figure(figsize=(10, 8))
 # Color clusters
 colors = best_labels.copy()
 scatter = plt.scatter(
-    embeddings_2d[:, 0], embeddings_2d[:, 1], c=colors, cmap="tab10", alpha=0.6, s=10
+    embeddings_2d[:, 0], embeddings_2d[:, 1], c=colors, cmap="tab10", alpha=0.6
 )
 
 plt.title(
@@ -380,8 +402,9 @@ print("Saving results summary...")
 with open(f"{output_dir}/hdbscan_results.txt", "w") as f:
     f.write(f"Dataset size: {n_samples} samples\n")
     f.write(f"Embeddings hash: {embeddings_hash}\n")
+    f.write(f"DBCV threshold: {DBCV_THRESHOLD}\n")
     f.write(
-        f"Best result: min_cluster_size={best_min_size}, k={best_k}, DBCV={best_score:.4f}, Calinski-Harabasz={best_ch_score:.2f}\n\n"
+        f"Best result: min_cluster_size={best_min_size}, k={best_k}, DBCV={best_score}, Calinski-Harabasz={best_ch_score}\n\n"
     )
     f.write("All results (sorted by DBCV score):\n")
     f.write(
