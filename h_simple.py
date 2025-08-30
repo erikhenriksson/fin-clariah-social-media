@@ -116,7 +116,7 @@ def save_hdbscan_cache(cache_dir, embeddings_hash, min_cluster_size, result_data
 
 
 def get_or_compute_hdbscan(
-    cache_dir, embeddings_hash, embeddings_full, min_cluster_size
+    cache_dir, embeddings_hash, embeddings_50d, min_cluster_size
 ):
     """Get HDBSCAN result from cache or compute it"""
     # Try to load from cache first
@@ -124,20 +124,18 @@ def get_or_compute_hdbscan(
     if cached_result is not None:
         return cached_result
 
-    # Compute HDBSCAN clustering on full-dimensional embeddings
-    print(
-        f"Computing HDBSCAN on {embeddings_full.shape[1]}D embeddings (min_cluster_size={min_cluster_size})..."
-    )
+    # Compute HDBSCAN clustering
+    print(f"Computing HDBSCAN (min_cluster_size={min_cluster_size})...")
     clusterer = hdbscan.HDBSCAN(
         min_cluster_size=min_cluster_size,
         min_samples=1,  # Minimize noise
         gen_min_span_tree=True,  # Required for DBCV calculation
     )
 
-    initial_labels = clusterer.fit_predict(embeddings_full)
+    initial_labels = clusterer.fit_predict(embeddings_50d)
 
     # Reassign noise points to nearest clusters
-    labels = assign_noise_to_clusters(embeddings_full, initial_labels)
+    labels = assign_noise_to_clusters(embeddings_50d, initial_labels)
 
     # Calculate metrics
     unique_labels = set(labels)
@@ -146,7 +144,7 @@ def get_or_compute_hdbscan(
 
     if n_clusters > 1:
         dbcv_score = clusterer.relative_validity_
-        ch_score = calinski_harabasz_score(embeddings_full, labels)
+        ch_score = calinski_harabasz_score(embeddings_50d, labels)
     else:
         dbcv_score = -1
         ch_score = -1
@@ -249,7 +247,7 @@ embeddings_50d = get_or_compute_umap(
     embeddings,
     cache_dir,
     embeddings_hash,
-    n_components=50,
+    n_components=200,
     n_neighbors=30,
     min_dist=0.0,
 )
@@ -302,7 +300,9 @@ for i, (percentage, min_size) in enumerate(zip(percentages, min_cluster_sizes)):
     )
 
     # Get HDBSCAN result from cache or compute it
-    result = get_or_compute_hdbscan(cache_dir, embeddings_hash, embeddings, min_size)
+    result = get_or_compute_hdbscan(
+        cache_dir, embeddings_hash, embeddings_50d, min_size
+    )
 
     labels = result["labels"]
     n_clusters = result["n_clusters"]
@@ -334,7 +334,7 @@ if best_labels is None:
 
     # Get the cached result for the fallback parameters
     fallback_result = get_or_compute_hdbscan(
-        cache_dir, embeddings_hash, embeddings, min_size
+        cache_dir, embeddings_hash, embeddings_50d, min_size
     )
     best_labels = fallback_result["labels"]
     best_min_size = min_size
@@ -361,7 +361,7 @@ if best_score < DBCV_THRESHOLD:
     print(f"Final result: 1 cluster with all {n_samples} samples")
 else:
     # Calculate final scores for the best result
-    best_ch_score = calinski_harabasz_score(embeddings, best_labels)
+    best_ch_score = calinski_harabasz_score(embeddings_50d, best_labels)
     # Find the number of reassigned points for the best result
     n_reassigned_best = next(
         result[3] for result in all_results if result[1] == best_min_size
