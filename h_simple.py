@@ -199,7 +199,7 @@ def get_or_compute_hdbscan(
     return result_data
 
 
-def calculate_test_parameters(n_samples, min_absolute_size=100, min_percentage=0.02):
+def calculate_test_parameters(n_samples, min_absolute_size=50, min_percentage=0.02):
     """Calculate min_cluster_size values to test based on number of clusters k"""
     min_cluster_size = max(min_absolute_size, int(n_samples * min_percentage))
     max_k = n_samples // min_cluster_size
@@ -217,7 +217,7 @@ def calculate_test_parameters(n_samples, min_absolute_size=100, min_percentage=0
     return min_cluster_sizes
 
 
-def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
+def process_file(pkl_file, cache_dir, dbcv_threshold=0.5):
     """Process a single pickle file and return results"""
     filename_without_ext = os.path.splitext(os.path.basename(pkl_file))[0]
     print(f"\n{'=' * 80}")
@@ -301,7 +301,7 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
 
         # Create a simple single-cluster visualization
         plt.figure(figsize=(10, 8))
-        plt.scatter(embeddings_2d[:, 0], embeddings_2d[:, 1], c="blue", alpha=0.6)
+        plt.scatter(embeddings_2d[:, 0], embeddings_2d[:, 1], c="blue", alpha=0.6, s=5)
         plt.title(f"Single cluster - Dataset too small ({n_samples} samples)")
         plt.xlabel("UMAP 1")
         plt.ylabel("UMAP 2")
@@ -476,7 +476,7 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
     # Color clusters
     colors = best_labels.copy()
     scatter = plt.scatter(
-        embeddings_2d[:, 0], embeddings_2d[:, 1], c=colors, cmap="tab10", alpha=0.6
+        embeddings_2d[:, 0], embeddings_2d[:, 1], c=colors, cmap="tab10", alpha=0.6, s=5
     )
 
     # Handle title formatting for single cluster case
