@@ -62,6 +62,7 @@ for i, (percentage, min_size) in enumerate(zip(percentages, min_cluster_sizes)):
     clusterer = hdbscan.HDBSCAN(
         min_cluster_size=min_size,
         min_samples=1,  # Minimize noise
+        gen_min_span_tree=True,  # Required for DBCV calculation
     )
 
     labels = clusterer.fit_predict(embeddings_50d)
@@ -99,8 +100,7 @@ if best_labels is None:
     clusterer = hdbscan.HDBSCAN(
         min_cluster_size=min_size,
         min_samples=1,
-        cluster_selection_epsilon=0.0,
-        random_state=42,
+        gen_min_span_tree=True,  # Required for DBCV calculation
     )
     best_labels = clusterer.fit_predict(embeddings_50d)
     best_min_size = min_size
