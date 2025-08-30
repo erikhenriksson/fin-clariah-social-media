@@ -1,3 +1,4 @@
+import hashlib
 import os
 import pickle
 import sys
@@ -9,10 +10,90 @@ from sklearn.metrics import silhouette_score
 
 import hdbscan
 
+
+def get_embeddings_hash(embeddings):
+    """Create a hash of the embeddings to use as cache key"""
+    return hashlib.md5(embeddings.tobytes()).hexdigest()[:16]
+
+
+def get_cache_filename(embeddings_hash, n_components, n_neighbors, min_dist):
+    """Generate cache filename based on parameters"""
+    return (
+        f"umap_{n_components}d_nn{n_neighbors}_md{min_dist:.3f}_{embeddings_hash}.pkl"
+    )
+
+
+def load_cached_umap(cache_dir, embeddings_hash, n_components, n_neighbors, min_dist):
+    """Load cached UMAP reduction if it exists"""
+    cache_file = os.path.join(
+        cache_dir,
+        get_cache_filename(embeddings_hash, n_components, n_neighbors, min_dist),
+    )
+
+    if os.path.exists(cache_file):
+        print(f"Loading cached {n_components}D UMAP from {cache_file}")
+        with open(cache_file, "rb") as f:
+            return pickle.load(f)
+    return None
+
+
+def save_umap_cache(
+    cache_dir, embeddings_hash, n_components, n_neighbors, min_dist, reduced_embeddings
+):
+    """Save UMAP reduction to cache"""
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_file = os.path.join(
+        cache_dir,
+        get_cache_filename(embeddings_hash, n_components, n_neighbors, min_dist),
+    )
+
+    print(f"Saving {n_components}D UMAP to cache: {cache_file}")
+    with open(cache_file, "wb") as f:
+        pickle.dump(reduced_embeddings, f)
+
+
+def get_or_compute_umap(
+    embeddings, cache_dir, embeddings_hash, n_components, n_neighbors, min_dist
+):
+    """Get UMAP reduction from cache or compute it"""
+    # Try to load from cache first
+    cached_result = load_cached_umap(
+        cache_dir, embeddings_hash, n_components, n_neighbors, min_dist
+    )
+    if cached_result is not None:
+        return cached_result
+
+    # Compute UMAP reduction
+    print(
+        f"Computing {n_components}D UMAP (n_neighbors={n_neighbors}, min_dist={min_dist})..."
+    )
+    umap_reducer = umap.UMAP(
+        n_components=n_components, n_neighbors=n_neighbors, min_dist=min_dist
+    )
+    reduced_embeddings = umap_reducer.fit_transform(embeddings)
+
+    # Save to cache
+    save_umap_cache(
+        cache_dir,
+        embeddings_hash,
+        n_components,
+        n_neighbors,
+        min_dist,
+        reduced_embeddings,
+    )
+
+    return reduced_embeddings
+
+
 # Get pickle file from command line
 pkl_file = sys.argv[1]
 filename_without_ext = os.path.splitext(os.path.basename(pkl_file))[0]
 print(f"Processing file: {pkl_file}")
+
+# Create cache directory relative to script location
+script_dir = os.path.dirname(os.path.abspath(__file__))
+cache_dir = os.path.join(script_dir, "umap_cache")
+print(f"Cache directory: {cache_dir}")
 
 # Load data
 print("Loading data...")
@@ -26,16 +107,25 @@ preds = [row["preds"] for row in data]
 n_samples = len(embeddings)
 print(f"Loaded {n_samples} samples with {embeddings.shape[1]}D embeddings")
 
-# UMAP reduction to 50D
-print("Reducing to 50D with UMAP...")
-umap_50d = umap.UMAP(n_components=50, n_neighbors=30, min_dist=0.0)
-embeddings_50d = umap_50d.fit_transform(embeddings)
+# Generate hash for embeddings to use as cache key
+embeddings_hash = get_embeddings_hash(embeddings)
+print(f"Embeddings hash: {embeddings_hash}")
+
+# UMAP reduction to 50D (with caching)
+embeddings_50d = get_or_compute_umap(
+    embeddings,
+    cache_dir,
+    embeddings_hash,
+    n_components=50,
+    n_neighbors=30,
+    min_dist=0.0,
+)
 print("50D reduction complete")
 
-# UMAP reduction to 2D (from original embeddings)
-print("Reducing to 2D with UMAP...")
-umap_2d = umap.UMAP(n_components=2, n_neighbors=15, min_dist=0.1)
-embeddings_2d = umap_2d.fit_transform(embeddings)
+# UMAP reduction to 2D (with caching)
+embeddings_2d = get_or_compute_umap(
+    embeddings, cache_dir, embeddings_hash, n_components=2, n_neighbors=15, min_dist=0.1
+)
 print("2D reduction complete")
 
 # Define min_cluster_size values as percentages of dataset
@@ -100,6 +190,7 @@ if best_labels is None:
     clusterer = hdbscan.HDBSCAN(
         min_cluster_size=min_size,
         min_samples=1,
+        cluster_selection_epsilon=0.0,
         gen_min_span_tree=True,  # Required for DBCV calculation
     )
     best_labels = clusterer.fit_predict(embeddings_50d)
@@ -142,6 +233,7 @@ print("UMAP plot saved")
 print("Saving results summary...")
 with open(f"{output_dir}/hdbscan_results.txt", "w") as f:
     f.write(f"Dataset size: {n_samples} samples\n")
+    f.write(f"Embeddings hash: {embeddings_hash}\n")
     f.write(
         f"Best result: min_cluster_size={best_min_size}, k={best_k}, DBCV={best_score:.4f}\n\n"
     )
@@ -182,6 +274,17 @@ with open(f"{output_dir}/cluster_examples.txt", "w") as f:
 
         for i, idx in enumerate(sample_indices, 1):
             f.write(f"{i}. {texts[idx]}\n")
+
+# Print cache statistics
+cache_files = [
+    f for f in os.listdir(cache_dir) if f.startswith("umap_") and f.endswith(".pkl")
+]
+print(f"\nCache statistics:")
+print(f"Cache directory: {cache_dir}")
+print(f"Total cached reductions: {len(cache_files)}")
+for cache_file in sorted(cache_files):
+    file_size = os.path.getsize(os.path.join(cache_dir, cache_file)) / 1024 / 1024  # MB
+    print(f"  {cache_file} ({file_size:.1f} MB)")
 
 print(f"\nAnalysis complete! Results saved in {output_dir}/")
 print(
