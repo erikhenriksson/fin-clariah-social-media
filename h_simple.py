@@ -28,13 +28,13 @@ print(f"Loaded {n_samples} samples with {embeddings.shape[1]}D embeddings")
 
 # UMAP reduction to 50D
 print("Reducing to 50D with UMAP...")
-umap_50d = umap.UMAP(n_components=50, n_neighbors=30, min_dist=0.0, random_state=42)
+umap_50d = umap.UMAP(n_components=50, n_neighbors=30, min_dist=0.0)
 embeddings_50d = umap_50d.fit_transform(embeddings)
 print("50D reduction complete")
 
 # UMAP reduction to 2D (from original embeddings)
 print("Reducing to 2D with UMAP...")
-umap_2d = umap.UMAP(n_components=2, n_neighbors=15, min_dist=0.1, random_state=42)
+umap_2d = umap.UMAP(n_components=2, n_neighbors=15, min_dist=0.1)
 embeddings_2d = umap_2d.fit_transform(embeddings)
 print("2D reduction complete")
 
@@ -62,8 +62,6 @@ for i, (percentage, min_size) in enumerate(zip(percentages, min_cluster_sizes)):
     clusterer = hdbscan.HDBSCAN(
         min_cluster_size=min_size,
         min_samples=1,  # Minimize noise
-        cluster_selection_epsilon=0.0,
-        random_state=42,
     )
 
     labels = clusterer.fit_predict(embeddings_50d)
