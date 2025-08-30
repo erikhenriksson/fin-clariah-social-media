@@ -375,7 +375,7 @@ else:
     )
 
 # Create output directory
-output_dir = f"single_analyses/{filename_without_ext}"
+output_dir = f"clusters/{filename_without_ext}"
 os.makedirs(output_dir, exist_ok=True)
 print(f"Saving results to {output_dir}/")
 
