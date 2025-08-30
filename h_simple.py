@@ -266,8 +266,7 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
     min_cluster_sizes = [max(2, int(n_samples * p / 100)) for p in percentages]
 
     # Filter out cluster sizes that would result in fewer than 100 examples per cluster
-    # But relax this constraint for very small datasets
-    min_samples_per_cluster = min(100, max(10, n_samples // 10))
+    min_samples_per_cluster = 100
     valid_params = []
     for p, size in zip(percentages, min_cluster_sizes):
         if size >= min_samples_per_cluster:
@@ -279,9 +278,61 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
 
     if not valid_params:
         print(
-            f"ERROR: No valid cluster sizes found! All percentages produce <{min_samples_per_cluster} samples."
+            f"ERROR: No valid cluster sizes found! Dataset too small ({n_samples} samples) for 100+ member clusters."
         )
-        return None
+        print("Assigning all points to a single cluster.")
+
+        # Force single cluster assignment
+        best_labels = np.ones(n_samples, dtype=int)
+        best_n_real_clusters = 1
+        best_score = "N/A (dataset too small)"
+        n_noise_best = 0
+        best_ch_score = "N/A (single cluster)"
+
+        # Create output directory and save results
+        output_dir = f"clusters/{filename_without_ext}"
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Create a simple single-cluster visualization
+        plt.figure(figsize=(10, 8))
+        plt.scatter(embeddings_2d[:, 0], embeddings_2d[:, 1], c="blue", alpha=0.6)
+        plt.title(
+            f"Single cluster - Dataset too small ({n_samples} samples < 200 required for 2×100)"
+        )
+        plt.xlabel("UMAP 1")
+        plt.ylabel("UMAP 2")
+        plt.tight_layout()
+        plt.savefig(f"{output_dir}/umap_clusters.png", dpi=300, bbox_inches="tight")
+        plt.close()
+
+        # Save summary
+        with open(f"{output_dir}/hdbscan_results.txt", "w") as f:
+            f.write(f"Dataset: {pkl_file}\n")
+            f.write(f"Dataset size: {n_samples} samples\n")
+            f.write(
+                f"Result: Single cluster (dataset too small for 100+ member clusters)\n"
+            )
+
+        # Save examples
+        with open(f"{output_dir}/cluster_examples.txt", "w") as f:
+            f.write(f"=== CLUSTER 1 (ALL SAMPLES) ===\n")
+            f.write(f"Size: {n_samples} samples\n\n")
+            sample_indices = np.random.choice(
+                range(n_samples), min(20, n_samples), replace=False
+            )
+            for i, idx in enumerate(sample_indices, 1):
+                text_clean = texts[idx].replace("\n", "\\n").replace("\r", "\\r")
+                f.write(f"{i}. {text_clean}\n")
+
+        return {
+            "filename": pkl_file,
+            "n_samples": n_samples,
+            "n_real_clusters": 1,
+            "n_noise": 0,
+            "dbcv_score": "N/A (too small)",
+            "ch_score": "N/A",
+            "output_dir": output_dir,
+        }
 
     percentages, min_cluster_sizes = zip(*valid_params)
     percentages = list(percentages)
