@@ -386,9 +386,13 @@ scatter = plt.scatter(
     embeddings_2d[:, 0], embeddings_2d[:, 1], c=colors, cmap="tab10", alpha=0.6
 )
 
-plt.title(
-    f"UMAP 2D with {best_k} clusters (HDBSCAN min_size={best_min_size}, DBCV: {best_score:.3f})"
-)
+# Handle title formatting for single cluster case
+if best_k == 1:
+    title = f"UMAP 2D with {best_k} cluster (forced due to low DBCV < {DBCV_THRESHOLD})"
+else:
+    title = f"UMAP 2D with {best_k} clusters (HDBSCAN min_size={best_min_size}, DBCV: {best_score:.3f})"
+
+plt.title(title)
 plt.xlabel("UMAP 1")
 plt.ylabel("UMAP 2")
 plt.colorbar(scatter)
@@ -463,7 +467,10 @@ for cache_file in sorted(hdbscan_cache_files):
     print(f"  {cache_file} ({file_size:.1f} MB)")
 
 print(f"\nAnalysis complete! Results saved in {output_dir}/")
-print(
-    f"Final best: min_cluster_size={best_min_size}, k={best_k}, DBCV={best_score:.4f}, CH={best_ch_score:.2f}"
-)
+if best_k == 1:
+    print(f"Final result: 1 cluster (forced due to DBCV < {DBCV_THRESHOLD})")
+else:
+    print(
+        f"Final best: min_cluster_size={best_min_size}, k={best_k}, DBCV={best_score:.4f}, CH={best_ch_score:.2f}"
+    )
 print(f"No noise points in final clustering (all reassigned to nearest clusters)")
