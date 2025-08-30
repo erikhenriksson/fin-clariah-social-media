@@ -1,12 +1,8 @@
-import gc
 import hashlib
 import os
 import pickle
 import sys
 
-import matplotlib
-
-matplotlib.use("Agg")  # Use non-interactive backend to save memory
 import matplotlib.pyplot as plt
 import numpy as np
 import umap
@@ -210,371 +206,118 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
     print(f"Processing file: {pkl_file}")
     print(f"{'=' * 80}")
 
-    # Initialize variables to None for proper cleanup
-    data = None
-    embeddings = None
-    texts = None
-    preds = None
-    embeddings_50d = None
-    embeddings_2d = None
-
+    # Load data
+    print("Loading data...")
     try:
-        # Load data
-        print("Loading data...")
-        try:
-            with open(pkl_file, "rb") as f:
-                data = pickle.load(f)
-        except Exception as e:
-            print(f"ERROR: Failed to load {pkl_file}: {e}")
-            return None
+        with open(pkl_file, "rb") as f:
+            data = pickle.load(f)
+    except Exception as e:
+        print(f"ERROR: Failed to load {pkl_file}: {e}")
+        return None
 
-        # Extract data
-        try:
-            embeddings = np.array([row["embed_last"] for row in data])
-            texts = [row["text"] for row in data]
-            preds = [row["preds"] for row in data]
-        except KeyError as e:
-            print(f"ERROR: Missing required field in data: {e}")
-            return None
-        except Exception as e:
-            print(f"ERROR: Failed to extract data: {e}")
-            return None
+    # Extract data
+    try:
+        embeddings = np.array([row["embed_last"] for row in data])
+        texts = [row["text"] for row in data]
+        preds = [row["preds"] for row in data]
+    except KeyError as e:
+        print(f"ERROR: Missing required field in data: {e}")
+        return None
+    except Exception as e:
+        print(f"ERROR: Failed to extract data: {e}")
+        return None
 
-        n_samples = len(embeddings)
-        print(f"Loaded {n_samples} samples with {embeddings.shape[1]}D embeddings")
+    n_samples = len(embeddings)
+    print(f"Loaded {n_samples} samples with {embeddings.shape[1]}D embeddings")
 
-        # Clear original data to free memory
-        del data
-        gc.collect()
-
-        if n_samples < 10:
-            print(
-                f"WARNING: Very small dataset ({n_samples} samples), results may not be meaningful"
-            )
-
-        # Generate hash for embeddings to use as cache key
-        embeddings_hash = get_embeddings_hash(embeddings)
-        print(f"Embeddings hash: {embeddings_hash}")
-
-        # UMAP reduction to 50D (with caching)
-        embeddings_50d = get_or_compute_umap(
-            embeddings,
-            cache_dir,
-            embeddings_hash,
-            n_components=50,
-            n_neighbors=min(30, n_samples - 1),  # Handle small datasets
-            min_dist=0.0,
+    if n_samples < 10:
+        print(
+            f"WARNING: Very small dataset ({n_samples} samples), results may not be meaningful"
         )
-        print("50D reduction complete")
 
-        # UMAP reduction to 2D (with caching)
-        embeddings_2d = get_or_compute_umap(
-            embeddings,
-            cache_dir,
-            embeddings_hash,
-            n_components=2,
-            n_neighbors=min(15, n_samples - 1),  # Handle small datasets
-            min_dist=0.1,
-        )
-        print("2D reduction complete")
+    # Generate hash for embeddings to use as cache key
+    embeddings_hash = get_embeddings_hash(embeddings)
+    print(f"Embeddings hash: {embeddings_hash}")
 
-        # Clear original high-dimensional embeddings to free memory
-        del embeddings
-        gc.collect()
+    # UMAP reduction to 50D (with caching)
+    embeddings_50d = get_or_compute_umap(
+        embeddings,
+        cache_dir,
+        embeddings_hash,
+        n_components=50,
+        n_neighbors=min(30, n_samples - 1),  # Handle small datasets
+        min_dist=0.0,
+    )
+    print("50D reduction complete")
 
-        # Define min_cluster_size values as percentages of dataset
-        percentages = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20]
-        min_cluster_sizes = [max(2, int(n_samples * p / 100)) for p in percentages]
+    # UMAP reduction to 2D (with caching)
+    embeddings_2d = get_or_compute_umap(
+        embeddings,
+        cache_dir,
+        embeddings_hash,
+        n_components=2,
+        n_neighbors=min(15, n_samples - 1),  # Handle small datasets
+        min_dist=0.1,
+    )
+    print("2D reduction complete")
 
-        # Filter out cluster sizes that would result in fewer than 100 examples per cluster
-        # But relax this constraint for very small datasets
-        min_samples_per_cluster = min(100, max(10, n_samples // 10))
-        valid_params = []
-        for p, size in zip(percentages, min_cluster_sizes):
-            if size >= min_samples_per_cluster:
-                valid_params.append((p, size))
-            else:
-                print(
-                    f"Skipping {p}% ({size} samples) - below {min_samples_per_cluster} sample threshold"
-                )
+    # Define min_cluster_size values as percentages of dataset
+    percentages = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20]
+    min_cluster_sizes = [max(2, int(n_samples * p / 100)) for p in percentages]
 
-        if not valid_params:
-            print(
-                f"ERROR: No valid cluster sizes found! All percentages produce <{min_samples_per_cluster} samples."
-            )
-            return None
-
-        percentages, min_cluster_sizes = zip(*valid_params)
-        percentages = list(percentages)
-        min_cluster_sizes = list(min_cluster_sizes)
-
-        print(f"\nTesting {len(min_cluster_sizes)} different min_cluster_size values:")
-        for p, size in zip(percentages, min_cluster_sizes):
-            print(f"  {p}% = {size} samples")
-
-        # Test different min_cluster_size values
-        best_score = -1
-        best_labels = None
-        best_min_size = None
-        best_n_real_clusters = None
-        all_results = []
-
-        print("\nRunning HDBSCAN with different min_cluster_size values...")
-        for i, (percentage, min_size) in enumerate(zip(percentages, min_cluster_sizes)):
-            print(
-                f"Testing {i + 1}/{len(min_cluster_sizes)}: min_cluster_size={min_size} ({percentage}%)"
-            )
-
-            # Get HDBSCAN result from cache or compute it
-            result = get_or_compute_hdbscan(
-                cache_dir, embeddings_hash, embeddings_50d, min_size
-            )
-
-            labels = result["labels"]
-            n_clusters = result["n_clusters"]
-            n_real_clusters = result["n_real_clusters"]
-            n_noise = result["n_noise"]
-            dbcv_score = result["dbcv_score"]
-            ch_score = result["ch_score"]
-
-            # Check if all real clusters meet the minimum size requirement
-            cluster_sizes = {}
-            meets_size_requirement = True
-
-            if n_real_clusters > 0:
-                unique_labels = np.unique(labels)
-                for cluster_id in unique_labels:
-                    if cluster_id != 0:  # Skip noise cluster
-                        cluster_size = np.sum(labels == cluster_id)
-                        cluster_sizes[cluster_id] = cluster_size
-                        if cluster_size < min_samples_per_cluster:
-                            meets_size_requirement = False
-
-            # Create size summary for logging
-            if cluster_sizes:
-                sizes_str = ", ".join([f"C{k}:{v}" for k, v in cluster_sizes.items()])
-            else:
-                sizes_str = "no real clusters"
-
-            all_results.append(
-                (
-                    percentage,
-                    min_size,
-                    n_clusters,
-                    n_real_clusters,
-                    n_noise,
-                    dbcv_score,
-                    ch_score,
-                    meets_size_requirement,  # Add this flag
-                    cluster_sizes,
-                )
-            )
-
-            status_marker = "✓" if meets_size_requirement else "✗"
-            print(
-                f"  → {n_real_clusters} real clusters + {n_noise} noise points, DBCV: {dbcv_score:.4f}, CH: {ch_score:.2f} [{sizes_str}] {status_marker}"
-            )
-
-            # Only consider this result if it meets size requirements AND has good DBCV
-            if (
-                dbcv_score > best_score
-                and n_real_clusters > 1
-                and meets_size_requirement
-            ):
-                best_score = dbcv_score
-                best_labels = labels.copy()  # Make a copy to avoid reference issues
-                best_min_size = min_size
-                best_n_real_clusters = n_real_clusters
-                print(f"    → New best result!")
-
-            # Force garbage collection after each HDBSCAN run
-            gc.collect()
-
-        if best_labels is None:
-            print(
-                f"\nWarning: No valid clustering found that meets size requirement (≥{min_samples_per_cluster} per cluster)!"
-            )
-            print("Looking for fallback options...")
-
-            # Try to find results with valid clustering but relaxed size requirements
-            valid_clustering_results = [
-                r for r in all_results if r[3] > 1
-            ]  # n_real_clusters > 1
-
-            if valid_clustering_results:
-                # Use the result with best DBCV among valid clusterings, even if size requirements aren't met
-                best_result = max(
-                    valid_clustering_results, key=lambda x: x[5]
-                )  # x[5] is dbcv_score
-                (
-                    percentage,
-                    min_size,
-                    n_clusters,
-                    n_real_clusters,
-                    n_noise,
-                    dbcv_score,
-                    ch_score,
-                    meets_size_req,
-                    cluster_sizes,
-                ) = best_result
-                print(
-                    f"Using fallback (ignoring size requirement): {percentage}% ({min_size} samples) with {n_real_clusters} real clusters"
-                )
-                print(f"Cluster sizes: {cluster_sizes}")
-
-                # Get the cached result for the fallback parameters
-                fallback_result = get_or_compute_hdbscan(
-                    cache_dir, embeddings_hash, embeddings_50d, min_size
-                )
-                best_labels = fallback_result["labels"].copy()
-                best_min_size = min_size
-                best_n_real_clusters = n_real_clusters
-                best_score = dbcv_score
-            else:
-                # No valid clustering found at all - this was the original fallback
-                best_result = max(
-                    all_results, key=lambda x: x[3]
-                )  # x[3] is n_real_clusters
-                (
-                    percentage,
-                    min_size,
-                    n_clusters,
-                    n_real_clusters,
-                    n_noise,
-                    dbcv_score,
-                    ch_score,
-                    meets_size_req,
-                    cluster_sizes,
-                ) = best_result
-                print(
-                    f"Using final fallback: {percentage}% ({min_size} samples) with {n_real_clusters} real clusters"
-                )
-
-                # Get the cached result for the fallback parameters
-                fallback_result = get_or_compute_hdbscan(
-                    cache_dir, embeddings_hash, embeddings_50d, min_size
-                )
-                best_labels = fallback_result["labels"].copy()
-                best_min_size = min_size
-                best_n_real_clusters = n_real_clusters
-                best_score = dbcv_score
-
-        # Check if best DBCV score is below threshold
-        if best_score < dbcv_threshold:
-            print(
-                f"\nDBCV threshold check: Best DBCV ({best_score:.4f}) < threshold ({dbcv_threshold})"
-            )
-            print(
-                "Assigning all points to a single cluster due to poor clustering quality."
-            )
-
-            # Create single cluster assignment (all points go to cluster 1, no noise)
-            best_labels = np.ones(
-                n_samples, dtype=int
-            )  # All points assigned to cluster 1
-            best_n_real_clusters = 1
-            best_min_size = "N/A (single cluster)"
-            best_score = "N/A (single cluster)"
-            n_noise_best = 0
-
-            # Calculate CH score for single cluster (will be undefined, but we'll note it)
-            best_ch_score = "N/A (single cluster)"
-
-            print(f"Final result: 1 cluster with all {n_samples} samples")
+    # Filter out cluster sizes that would result in fewer than 100 examples per cluster
+    # But relax this constraint for very small datasets
+    min_samples_per_cluster = min(100, max(10, n_samples // 10))
+    valid_params = []
+    for p, size in zip(percentages, min_cluster_sizes):
+        if size >= min_samples_per_cluster:
+            valid_params.append((p, size))
         else:
-            # Calculate final scores for the best result
-            # For CH score, exclude noise points if they exist
-            non_noise_mask = best_labels != 0
-            if np.sum(non_noise_mask) > 1 and best_n_real_clusters > 1:
-                best_ch_score = calinski_harabasz_score(
-                    embeddings_50d[non_noise_mask], best_labels[non_noise_mask]
-                )
-            else:
-                best_ch_score = -1
-
-            # Find the number of noise points for the best result
-            best_result_data = next(
-                result for result in all_results if result[1] == best_min_size
-            )
-            n_noise_best = best_result_data[4]  # n_noise is at index 4
-            cluster_sizes_best = best_result_data[8]  # cluster_sizes is at index 8
-
             print(
-                f"\nBest result: min_cluster_size={best_min_size}, {best_n_real_clusters} real clusters, {n_noise_best} noise points, DBCV={best_score:.4f}, CH={best_ch_score:.2f}"
+                f"Skipping {p}% ({size} samples) - below {min_samples_per_cluster} sample threshold"
             )
-            print(f"Final cluster sizes: {cluster_sizes_best}")
 
-        # Create output directory
-        output_dir = f"clusters/{filename_without_ext}"
-        os.makedirs(output_dir, exist_ok=True)
-        print(f"Saving results to {output_dir}/")
+    if not valid_params:
+        print(
+            f"ERROR: No valid cluster sizes found! All percentages produce <{min_samples_per_cluster} samples."
+        )
+        return None
 
-        # Plot 2D UMAP with clusters
-        print("Creating UMAP visualization...")
+    percentages, min_cluster_sizes = zip(*valid_params)
+    percentages = list(percentages)
+    min_cluster_sizes = list(min_cluster_sizes)
 
-        # Create plot with explicit figure management
-        fig, ax = plt.subplots(figsize=(10, 8))
+    print(f"\nTesting {len(min_cluster_sizes)} different min_cluster_size values:")
+    for p, size in zip(percentages, min_cluster_sizes):
+        print(f"  {p}% = {size} samples")
 
-        # Color clusters
-        colors = best_labels.copy()
-        scatter = ax.scatter(
-            embeddings_2d[:, 0], embeddings_2d[:, 1], c=colors, cmap="tab10", alpha=0.6
+    # Test different min_cluster_size values
+    best_score = -1
+    best_labels = None
+    best_min_size = None
+    best_n_real_clusters = None
+    all_results = []
+
+    print("\nRunning HDBSCAN with different min_cluster_size values...")
+    for i, (percentage, min_size) in enumerate(zip(percentages, min_cluster_sizes)):
+        print(
+            f"Testing {i + 1}/{len(min_cluster_sizes)}: min_cluster_size={min_size} ({percentage}%)"
         )
 
-        # Handle title formatting for single cluster case
-        if best_n_real_clusters == 1:
-            if isinstance(best_score, str):  # Single cluster due to threshold
-                title = f"UMAP 2D with {best_n_real_clusters} cluster (forced due to low DBCV < {dbcv_threshold})"
-            else:
-                title = f"UMAP 2D with {best_n_real_clusters} cluster"
-        else:
-            n_noise_display = n_noise_best if "n_noise_best" in locals() else 0
-            title = f"UMAP 2D with {best_n_real_clusters} clusters + {n_noise_display} noise (HDBSCAN min_size={best_min_size}, DBCV: {best_score:.3f})"
+        # Get HDBSCAN result from cache or compute it
+        result = get_or_compute_hdbscan(
+            cache_dir, embeddings_hash, embeddings_50d, min_size
+        )
 
-        ax.set_title(title)
-        ax.set_xlabel("UMAP 1")
-        ax.set_ylabel("UMAP 2")
-        plt.colorbar(scatter)
-        plt.tight_layout()
-        plt.savefig(f"{output_dir}/umap_clusters.png", dpi=300, bbox_inches="tight")
+        labels = result["labels"]
+        n_clusters = result["n_clusters"]
+        n_real_clusters = result["n_real_clusters"]
+        n_noise = result["n_noise"]
+        dbcv_score = result["dbcv_score"]
+        ch_score = result["ch_score"]
 
-        # Explicitly close the figure and clear matplotlib cache
-        plt.close(fig)
-        plt.close("all")
-        gc.collect()
-
-        print("UMAP plot saved")
-
-        # Save all results sorted by DBCV score
-        print("Saving results summary...")
-        with open(f"{output_dir}/hdbscan_results.txt", "w") as f:
-            f.write(f"Dataset: {pkl_file}\n")
-            f.write(f"Dataset size: {n_samples} samples\n")
-            f.write(f"Embeddings hash: {embeddings_hash}\n")
-            f.write(f"DBCV threshold: {dbcv_threshold}\n")
-            f.write(
-                f"Minimum samples per cluster requirement: {min_samples_per_cluster}\n"
-            )
-            f.write(
-                f"Clustering scheme: Noise = Cluster 0, Real clusters = 1, 2, 3, ...\n"
-            )
-            if isinstance(best_score, str):
-                f.write(
-                    f"Best result: Single cluster (all samples), reason: {best_score}\n\n"
-                )
-            else:
-                f.write(
-                    f"Best result: min_cluster_size={best_min_size}, {best_n_real_clusters} real clusters, {n_noise_best} noise points, DBCV={best_score}, Calinski-Harabasz={best_ch_score}\n\n"
-                )
-            f.write("All results (sorted by DBCV score):\n")
-            f.write(
-                "Rank | Percentage | Min_Size | Total_Clusters | Real_Clusters | Noise_Points | DBCV Score | Calinski-Harabasz | Size_Check | Cluster_Sizes | Notes\n"
-            )
-            f.write("-" * 150 + "\n")
-            sorted_results = sorted(
-                all_results, key=lambda x: x[5], reverse=True
-            )  # Sort by DBCV (index 5)
-            for i, (
+        all_results.append(
+            (
                 percentage,
                 min_size,
                 n_clusters,
@@ -582,97 +325,201 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
                 n_noise,
                 dbcv_score,
                 ch_score,
-                meets_size_req,
-                cluster_sizes,
-            ) in enumerate(sorted_results):
-                marker = " <-- BEST" if min_size == best_min_size else ""
-                size_check = "PASS" if meets_size_req else "FAIL"
-                sizes_str = (
-                    ",".join([f"C{k}:{v}" for k, v in cluster_sizes.items()])
-                    if cluster_sizes
-                    else "none"
-                )
-                f.write(
-                    f"{i + 1:4d} | {percentage:9.1f}% | {min_size:8d} | {n_clusters:13d} | {n_real_clusters:12d} | {n_noise:11d} | {dbcv_score:10.4f} | {ch_score:17.2f} | {size_check:10s} | {sizes_str:13s} |{marker}\n"
-                )
+            )
+        )
+        print(
+            f"  → {n_real_clusters} real clusters + {n_noise} noise points, DBCV: {dbcv_score:.4f}, CH: {ch_score:.2f}"
+        )
 
-        # Save text examples from each cluster
-        print("Saving cluster examples...")
-        with open(f"{output_dir}/cluster_examples.txt", "w") as f:
-            unique_clusters = sorted(set(best_labels))
+        if dbcv_score > best_score and n_real_clusters > 1:
+            best_score = dbcv_score
+            best_labels = labels
+            best_min_size = min_size
+            best_n_real_clusters = n_real_clusters
 
-            for cluster_id in unique_clusters:
-                cluster_indices = np.where(best_labels == cluster_id)[0]
+    if best_labels is None:
+        print("\nWarning: No valid clustering found! All results had ≤1 real cluster.")
+        # Use the result with most real clusters as fallback
+        best_result = max(all_results, key=lambda x: x[3])  # x[3] is n_real_clusters
+        (
+            percentage,
+            min_size,
+            n_clusters,
+            n_real_clusters,
+            n_noise,
+            dbcv_score,
+            ch_score,
+        ) = best_result
+        print(
+            f"Using fallback: {percentage}% ({min_size} samples) with {n_real_clusters} real clusters"
+        )
 
-                if cluster_id == 0:
-                    f.write(f"\n=== CLUSTER {cluster_id} (NOISE) ===\n")
-                else:
-                    f.write(f"\n=== CLUSTER {cluster_id} ===\n")
+        # Get the cached result for the fallback parameters
+        fallback_result = get_or_compute_hdbscan(
+            cache_dir, embeddings_hash, embeddings_50d, min_size
+        )
+        best_labels = fallback_result["labels"]
+        best_min_size = min_size
+        best_n_real_clusters = n_real_clusters
+        best_score = dbcv_score
 
-                f.write(f"Size: {len(cluster_indices)} samples\n\n")
+    # Check if best DBCV score is below threshold
+    if best_score < dbcv_threshold:
+        print(
+            f"\nDBCV threshold check: Best DBCV ({best_score:.4f}) < threshold ({dbcv_threshold})"
+        )
+        print(
+            "Assigning all points to a single cluster due to poor clustering quality."
+        )
 
-                # Get up to 20 random examples
-                sample_indices = np.random.choice(
-                    cluster_indices, min(20, len(cluster_indices)), replace=False
-                )
+        # Create single cluster assignment (all points go to cluster 1, no noise)
+        best_labels = np.ones(n_samples, dtype=int)  # All points assigned to cluster 1
+        best_n_real_clusters = 1
+        best_min_size = "N/A (single cluster)"
+        best_score = "N/A (single cluster)"
+        n_noise_best = 0
 
-                for i, idx in enumerate(sample_indices, 1):
-                    # Convert actual newlines to literal \n characters
-                    text_clean = texts[idx].replace("\n", "\\n").replace("\r", "\\r")
-                    f.write(f"{i}. {text_clean}\n")
+        # Calculate CH score for single cluster (will be undefined, but we'll note it)
+        best_ch_score = "N/A (single cluster)"
 
-        # Return summary for batch processing
-        result_summary = {
-            "filename": pkl_file,
-            "n_samples": n_samples,
-            "n_real_clusters": best_n_real_clusters,
-            "n_noise": n_noise_best if "n_noise_best" in locals() else 0,
-            "dbcv_score": best_score,
-            "ch_score": best_ch_score if "best_ch_score" in locals() else "N/A",
-            "output_dir": output_dir,
-        }
-
-        print(f"Analysis complete for {pkl_file}! Results saved in {output_dir}/")
-        if isinstance(best_score, str):  # Single cluster case
-            print(f"Final result: 1 cluster with all {n_samples} samples")
+        print(f"Final result: 1 cluster with all {n_samples} samples")
+    else:
+        # Calculate final scores for the best result
+        # For CH score, exclude noise points if they exist
+        non_noise_mask = best_labels != 0
+        if np.sum(non_noise_mask) > 1 and best_n_real_clusters > 1:
+            best_ch_score = calinski_harabasz_score(
+                embeddings_50d[non_noise_mask], best_labels[non_noise_mask]
+            )
         else:
-            print(
-                f"Final best: min_cluster_size={best_min_size}, {best_n_real_clusters} real clusters, {n_noise_best} noise points, DBCV={best_score:.4f}, CH={best_ch_score:.2f}"
+            best_ch_score = -1
+
+        # Find the number of noise points for the best result
+        n_noise_best = next(
+            result[4] for result in all_results if result[1] == best_min_size
+        )
+
+        print(
+            f"\nBest result: min_cluster_size={best_min_size}, {best_n_real_clusters} real clusters, {n_noise_best} noise points, DBCV={best_score:.4f}, CH={best_ch_score:.2f}"
+        )
+
+    # Create output directory
+    output_dir = f"clusters/{filename_without_ext}"
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"Saving results to {output_dir}/")
+
+    # Plot 2D UMAP with clusters
+    print("Creating UMAP visualization...")
+    plt.figure(figsize=(10, 8))
+
+    # Color clusters
+    colors = best_labels.copy()
+    scatter = plt.scatter(
+        embeddings_2d[:, 0], embeddings_2d[:, 1], c=colors, cmap="tab10", alpha=0.6
+    )
+
+    # Handle title formatting for single cluster case
+    if best_n_real_clusters == 1:
+        if isinstance(best_score, str):  # Single cluster due to threshold
+            title = f"UMAP 2D with {best_n_real_clusters} cluster (forced due to low DBCV < {dbcv_threshold})"
+        else:
+            title = f"UMAP 2D with {best_n_real_clusters} cluster"
+    else:
+        n_noise_display = n_noise_best if "n_noise_best" in locals() else 0
+        title = f"UMAP 2D with {best_n_real_clusters} clusters + {n_noise_display} noise (HDBSCAN min_size={best_min_size}, DBCV: {best_score:.3f})"
+
+    plt.title(title)
+    plt.xlabel("UMAP 1")
+    plt.ylabel("UMAP 2")
+    plt.colorbar(scatter)
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/umap_clusters.png", dpi=300, bbox_inches="tight")
+    plt.close()
+    print("UMAP plot saved")
+
+    # Save all results sorted by DBCV score
+    print("Saving results summary...")
+    with open(f"{output_dir}/hdbscan_results.txt", "w") as f:
+        f.write(f"Dataset: {pkl_file}\n")
+        f.write(f"Dataset size: {n_samples} samples\n")
+        f.write(f"Embeddings hash: {embeddings_hash}\n")
+        f.write(f"DBCV threshold: {dbcv_threshold}\n")
+        f.write(f"Clustering scheme: Noise = Cluster 0, Real clusters = 1, 2, 3, ...\n")
+        if isinstance(best_score, str):
+            f.write(
+                f"Best result: Single cluster (all samples), reason: {best_score}\n\n"
+            )
+        else:
+            f.write(
+                f"Best result: min_cluster_size={best_min_size}, {best_n_real_clusters} real clusters, {n_noise_best} noise points, DBCV={best_score}, Calinski-Harabasz={best_ch_score}\n\n"
+            )
+        f.write("All results (sorted by DBCV score):\n")
+        f.write(
+            "Rank | Percentage | Min_Size | Total_Clusters | Real_Clusters | Noise_Points | DBCV Score | Calinski-Harabasz | Notes\n"
+        )
+        f.write("-" * 120 + "\n")
+        sorted_results = sorted(
+            all_results, key=lambda x: x[5], reverse=True
+        )  # Sort by DBCV (index 5)
+        for i, (
+            percentage,
+            min_size,
+            n_clusters,
+            n_real_clusters,
+            n_noise,
+            dbcv_score,
+            ch_score,
+        ) in enumerate(sorted_results):
+            marker = " <-- BEST" if min_size == best_min_size else ""
+            f.write(
+                f"{i + 1:4d} | {percentage:9.1f}% | {min_size:8d} | {n_clusters:13d} | {n_real_clusters:12d} | {n_noise:11d} | {dbcv_score:10.4f} | {ch_score:17.2f} |{marker}\n"
             )
 
-        return result_summary
+    # Save text examples from each cluster
+    print("Saving cluster examples...")
+    with open(f"{output_dir}/cluster_examples.txt", "w") as f:
+        unique_clusters = sorted(set(best_labels))
 
-    finally:
-        # Aggressive cleanup of all variables
-        print("Cleaning up memory...")
+        for cluster_id in unique_clusters:
+            cluster_indices = np.where(best_labels == cluster_id)[0]
 
-        # Delete all large variables
-        variables_to_delete = [
-            "data",
-            "embeddings",
-            "embeddings_50d",
-            "embeddings_2d",
-            "texts",
-            "preds",
-            "best_labels",
-            "all_results",
-        ]
+            if cluster_id == 0:
+                f.write(f"\n=== CLUSTER {cluster_id} (NOISE) ===\n")
+            else:
+                f.write(f"\n=== CLUSTER {cluster_id} ===\n")
 
-        for var_name in variables_to_delete:
-            if var_name in locals():
-                del locals()[var_name]
+            f.write(f"Size: {len(cluster_indices)} samples\n\n")
 
-        # Force garbage collection
-        gc.collect()
+            # Get up to 20 random examples
+            sample_indices = np.random.choice(
+                cluster_indices, min(20, len(cluster_indices)), replace=False
+            )
 
-        # Clear matplotlib cache
-        plt.close("all")
-        if hasattr(plt, "clf"):
-            plt.clf()
-        if hasattr(plt, "cla"):
-            plt.cla()
+            for i, idx in enumerate(sample_indices, 1):
+                # Convert actual newlines to literal \n characters
+                text_clean = texts[idx].replace("\n", "\\n").replace("\r", "\\r")
+                f.write(f"{i}. {text_clean}\n")
 
-        print("Memory cleanup complete")
+    # Return summary for batch processing
+    result_summary = {
+        "filename": pkl_file,
+        "n_samples": n_samples,
+        "n_real_clusters": best_n_real_clusters,
+        "n_noise": n_noise_best if "n_noise_best" in locals() else 0,
+        "dbcv_score": best_score,
+        "ch_score": best_ch_score if "best_ch_score" in locals() else "N/A",
+        "output_dir": output_dir,
+    }
+
+    print(f"Analysis complete for {pkl_file}! Results saved in {output_dir}/")
+    if isinstance(best_score, str):  # Single cluster case
+        print(f"Final result: 1 cluster with all {n_samples} samples")
+    else:
+        print(
+            f"Final best: min_cluster_size={best_min_size}, {best_n_real_clusters} real clusters, {n_noise_best} noise points, DBCV={best_score:.4f}, CH={best_ch_score:.2f}"
+        )
+
+    return result_summary
 
 
 def main():
@@ -725,13 +572,6 @@ def main():
         except Exception as e:
             failed_files.append(pkl_file)
             print(f"✗ Error processing {pkl_file}: {e}")
-
-        # Force garbage collection between files
-        print("Running inter-file garbage collection...")
-        gc.collect()
-
-        # Clear any remaining matplotlib figures
-        plt.close("all")
 
     # Print summary
     print(f"\n{'=' * 80}")
