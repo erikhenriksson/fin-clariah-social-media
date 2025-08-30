@@ -465,7 +465,7 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
         )
 
     # Create output directory
-    output_dir = f"clusters/{filename_without_ext}"
+    output_dir = f"clusters2/{filename_without_ext}"
     os.makedirs(output_dir, exist_ok=True)
     print(f"Saving results to {output_dir}/")
 
