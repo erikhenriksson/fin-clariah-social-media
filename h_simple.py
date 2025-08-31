@@ -217,7 +217,7 @@ def calculate_test_parameters(n_samples, min_absolute_size=50, min_percentage=0.
     return min_cluster_sizes
 
 
-def process_file(pkl_file, cache_dir, dbcv_threshold=0.5):
+def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
     """Process a single pickle file and return results"""
     filename_without_ext = os.path.splitext(os.path.basename(pkl_file))[0]
     print(f"\n{'=' * 80}")
@@ -424,8 +424,35 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.5):
         best_n_real_clusters = n_real_clusters
         best_score = dbcv_score
 
-    # Check if best DBCV score is below threshold
-    if best_score < dbcv_threshold:
+    # Get the best result data to check noise points
+    best_result_data = get_or_compute_hdbscan(
+        cache_dir, embeddings_hash, embeddings_50d, best_min_size
+    )
+    n_noise_best = best_result_data["n_noise"]
+
+    # Check if best result has more than 5 clusters (including noise)
+    max_clusters_allowed = 5
+    total_clusters = best_n_real_clusters + (
+        1 if n_noise_best > 0 else 0
+    )  # real clusters + noise cluster if exists
+
+    if total_clusters > max_clusters_allowed:
+        print(
+            f"\nMax clusters check: Total clusters ({total_clusters}) > allowed ({max_clusters_allowed})"
+        )
+        print(f"  Real clusters: {best_n_real_clusters}, Noise points: {n_noise_best}")
+        print("Assigning all points to a single cluster due to too many clusters.")
+
+        # Create single cluster assignment (all points go to cluster 1, no noise)
+        best_labels = np.ones(n_samples, dtype=int)  # All points assigned to cluster 1
+        best_n_real_clusters = 1
+        best_min_size = "N/A (single cluster - too many clusters)"
+        best_score = "N/A (single cluster - too many clusters)"
+        n_noise_best = 0
+        best_ch_score = "N/A (single cluster)"
+
+        print(f"Final result: 1 cluster with all {n_samples} samples")
+    elif best_score < dbcv_threshold:
         print(
             f"\nDBCV threshold check: Best DBCV ({best_score:.4f}) < threshold ({dbcv_threshold})"
         )
@@ -436,8 +463,8 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.5):
         # Create single cluster assignment (all points go to cluster 1, no noise)
         best_labels = np.ones(n_samples, dtype=int)  # All points assigned to cluster 1
         best_n_real_clusters = 1
-        best_min_size = "N/A (single cluster)"
-        best_score = "N/A (single cluster)"
+        best_min_size = "N/A (single cluster - poor quality)"
+        best_score = "N/A (single cluster - poor quality)"
         n_noise_best = 0
 
         # Calculate CH score for single cluster (will be undefined, but we'll note it)
@@ -455,17 +482,12 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.5):
         else:
             best_ch_score = -1
 
-        # Find the number of noise points for the best result
-        n_noise_best = next(
-            result[4] for result in all_results if result[1] == best_min_size
-        )
-
         print(
             f"\nBest result: min_cluster_size={best_min_size}, {best_n_real_clusters} real clusters, {n_noise_best} noise points, DBCV={best_score:.4f}, CH={best_ch_score:.2f}"
         )
 
     # Create output directory
-    output_dir = f"clusters_final/{filename_without_ext}"
+    output_dir = f"clusters_final_max5/{filename_without_ext}"
     os.makedirs(output_dir, exist_ok=True)
     print(f"Saving results to {output_dir}/")
 
@@ -481,8 +503,13 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.5):
 
     # Handle title formatting for single cluster case
     if best_n_real_clusters == 1:
-        if isinstance(best_score, str):  # Single cluster due to threshold
-            title = f"UMAP 2D with {best_n_real_clusters} cluster (forced due to low DBCV < {dbcv_threshold})"
+        if isinstance(
+            best_score, str
+        ):  # Single cluster due to threshold or too many clusters
+            if "too many clusters" in best_score:
+                title = f"UMAP 2D with {best_n_real_clusters} cluster (forced due to > {max_clusters_allowed} clusters)"
+            else:
+                title = f"UMAP 2D with {best_n_real_clusters} cluster (forced due to low DBCV < {dbcv_threshold})"
         else:
             title = f"UMAP 2D with {best_n_real_clusters} cluster"
     else:
@@ -505,6 +532,7 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.5):
         f.write(f"Dataset size: {n_samples} samples\n")
         f.write(f"Embeddings hash: {embeddings_hash}\n")
         f.write(f"DBCV threshold: {dbcv_threshold}\n")
+        f.write(f"Max clusters allowed: {max_clusters_allowed}\n")
         f.write(f"Clustering scheme: Noise = Cluster 0, Real clusters = 1, 2, 3, ...\n")
         if isinstance(best_score, str):
             f.write(
