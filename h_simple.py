@@ -518,6 +518,39 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
     os.makedirs(output_dir, exist_ok=True)
     print(f"Saving results to {output_dir}/")
 
+    # Create output directory
+    output_dir = f"clusters_final_final/{filename_without_ext}"
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"Saving results to {output_dir}/")
+
+    # Save clustered data to pickle file
+    print("Saving clustered data to pickle...")
+    clustered_data = []
+    for i in range(len(texts)):
+        clustered_data.append(
+            {
+                "text": texts[i],
+                "preds": preds[i],
+                "cluster_id": int(
+                    best_labels[i]
+                ),  # Convert to regular int for JSON compatibility
+            }
+        )
+
+    # Save to pickle file in the output directory
+    pickle_output_path = f"{output_dir}/clustered_data.pkl"
+    with open(pickle_output_path, "wb") as f:
+        pickle.dump(clustered_data, f)
+    print(f"Clustered data saved to {pickle_output_path}")
+
+    # Optional: Also save as JSON for easier inspection
+    json_output_path = f"{output_dir}/clustered_data.json"
+    import json
+
+    with open(json_output_path, "w", encoding="utf-8") as f:
+        json.dump(clustered_data, f, indent=2, ensure_ascii=False)
+    print(f"Clustered data also saved as JSON to {json_output_path}")
+
     # Plot 2D UMAP with clusters
     print("Creating UMAP visualization...")
     plt.figure(figsize=(10, 8))
