@@ -430,6 +430,33 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
     )
     n_noise_best = best_result_data["n_noise"]
 
+    # NEW: Check if noise points exceed smallest cluster size
+    if best_n_real_clusters > 1 and n_noise_best > 0:
+        # Calculate cluster sizes for real clusters only (excluding noise cluster 0)
+        real_cluster_ids = [c for c in set(best_labels) if c > 0]
+        cluster_sizes = [np.sum(best_labels == c) for c in real_cluster_ids]
+        smallest_cluster_size = min(cluster_sizes)
+
+        if n_noise_best > smallest_cluster_size:
+            print(
+                f"\nNoise check: Noise points ({n_noise_best}) > smallest cluster ({smallest_cluster_size})"
+            )
+            print("Assigning all points to a single cluster due to excessive noise.")
+
+            # Create single cluster assignment (all points go to cluster 1, no noise)
+            best_labels = np.ones(n_samples, dtype=int)
+            best_n_real_clusters = 1
+            best_min_size = "N/A (single cluster - excessive noise)"
+            best_score = "N/A (single cluster - excessive noise)"
+            n_noise_best = 0
+            best_ch_score = "N/A (single cluster)"
+
+            print(f"Final result: 1 cluster with all {n_samples} samples")
+        else:
+            print(
+                f"Noise check passed: Noise points ({n_noise_best}) <= smallest cluster ({smallest_cluster_size})"
+            )
+
     # Check if best result has more than 5 clusters (including noise)
     max_clusters_allowed = 5
     total_clusters = best_n_real_clusters + (
@@ -508,6 +535,8 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
         ):  # Single cluster due to threshold or too many clusters
             if "too many clusters" in best_score:
                 title = f"UMAP 2D with {best_n_real_clusters} cluster (forced due to > {max_clusters_allowed} clusters)"
+            elif "excessive noise" in best_score:
+                title = f"UMAP 2D with {best_n_real_clusters} cluster (forced due to excessive noise)"
             else:
                 title = f"UMAP 2D with {best_n_real_clusters} cluster (forced due to low DBCV < {dbcv_threshold})"
         else:
