@@ -58,11 +58,7 @@ def load_and_prepare_data(json_file_path):
 
     # Handle preds - assuming it's a list but we want the first element
     # or if it's meant to be cluster_id, adjust accordingly
-    if "preds" in data[0] and data[0]["preds"]:
-        labels = [item["preds"][0] if item["preds"] else "UNKNOWN" for item in data]
-    else:
-        # Fallback to cluster_id if preds is empty
-        labels = [str(item["cluster_id"]) for item in data]
+    labels = [str(item["cluster_id"]) for item in data]
 
     return texts, labels
 
