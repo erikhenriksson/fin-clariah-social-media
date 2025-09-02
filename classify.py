@@ -19,39 +19,22 @@ from transformers import (
 warnings.filterwarnings("ignore")
 
 
-# Check and setup GPU (CUDA/ROCm)
-def setup_gpu():
-    """Check GPU availability and setup device (works with both NVIDIA CUDA and AMD ROCm)"""
+# Check and setup CUDA
+def setup_cuda():
+    """Check CUDA availability and setup device"""
     if torch.cuda.is_available():
         device = torch.device("cuda")
-        print(f"GPU is available! Device count: {torch.cuda.device_count()}")
-
-        try:
-            # This works for both CUDA and ROCm
-            print(f"Using GPU: {torch.cuda.get_device_name(0)}")
-            print(
-                f"Available GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB"
-            )
-        except Exception as e:
-            print(f"Could not get detailed GPU info: {e}")
-            print("This might be an AMD GPU with ROCm - that's fine!")
-
-        # Check if this is ROCm
-        try:
-            import torch.version
-
-            if hasattr(torch.version, "hip") and torch.version.hip is not None:
-                print(f"ROCm/HIP version: {torch.version.hip}")
-            elif hasattr(torch.version, "cuda") and torch.version.cuda is not None:
-                print(f"CUDA version: {torch.version.cuda}")
-        except:
-            pass
+        print(f"CUDA is available! Using GPU: {torch.cuda.get_device_name(0)}")
+        print(f"CUDA version: {torch.version.cuda}")
+        print(
+            f"Available GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB"
+        )
 
         # Clear cache to start fresh
         torch.cuda.empty_cache()
         return device
     else:
-        print("No GPU available. Using CPU.")
+        print("CUDA is not available. Using CPU.")
         return torch.device("cpu")
 
 
@@ -130,10 +113,10 @@ def get_optimal_batch_size(device, model_size="large"):
 
 
 def create_classifier(json_file_path):
-    """Create and train XLM-R classifier with GPU optimization (CUDA/ROCm)"""
+    """Create and train XLM-R classifier with CUDA optimization"""
 
-    # Setup GPU
-    device = setup_gpu()
+    # Setup CUDA
+    device = setup_cuda()
 
     # Load data
     texts, labels = load_and_prepare_data(json_file_path)
@@ -182,8 +165,8 @@ def create_classifier(json_file_path):
     # Data collator
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
 
-    # Training arguments - optimized for GPU (CUDA/ROCm)
-    use_gpu = device.type == "cuda"
+    # Training arguments - optimized for CUDA
+    use_cuda = device.type == "cuda"
     training_args = TrainingArguments(
         output_dir="./results",
         num_train_epochs=3,
@@ -201,10 +184,10 @@ def create_classifier(json_file_path):
         metric_for_best_model="eval_loss",
         save_total_limit=2,
         seed=42,
-        fp16=use_gpu,  # Enable mixed precision for GPU
-        dataloader_num_workers=4 if use_gpu else 0,  # Parallel data loading
+        fp16=use_cuda,  # Enable mixed precision for GPU
+        dataloader_num_workers=4 if use_cuda else 0,  # Parallel data loading
         remove_unused_columns=False,
-        dataloader_pin_memory=use_gpu,  # Pin memory for faster transfer
+        dataloader_pin_memory=use_cuda,  # Pin memory for faster transfer
     )
 
     # Initialize trainer
@@ -221,14 +204,14 @@ def create_classifier(json_file_path):
     print(f"Training on device: {next(model.parameters()).device}")
 
     # Monitor GPU usage during training
-    if use_gpu:
+    if use_cuda:
         print(
             f"GPU memory before training: {torch.cuda.memory_allocated() / 1e9:.2f} GB"
         )
 
     trainer.train()
 
-    if use_gpu:
+    if use_cuda:
         print(
             f"GPU memory after training: {torch.cuda.memory_allocated() / 1e9:.2f} GB"
         )
@@ -258,7 +241,7 @@ def create_classifier(json_file_path):
 
 
 def predict_text(text, model, tokenizer, label_encoder, device):
-    """Predict text with GPU support (CUDA/ROCm)"""
+    """Predict text with CUDA support"""
     model.eval()
     inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True)
 
