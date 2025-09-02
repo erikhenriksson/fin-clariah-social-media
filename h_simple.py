@@ -6,10 +6,11 @@ import sys
 import matplotlib.pyplot as plt
 import numpy as np
 import umap
-from sklearn.metrics import calinski_harabasz_score, silhouette_score
-from sklearn.neighbors import NearestNeighbors
+from sklearn.metrics import calinski_harabasz_score
 
 import hdbscan
+
+MAX_CLUSTERS = 5
 
 
 def get_embeddings_hash(embeddings):
@@ -458,7 +459,7 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
             )
 
     # Check if best result has more than 5 clusters (including noise)
-    max_clusters_allowed = 5
+    max_clusters_allowed = MAX_CLUSTERS
     total_clusters = best_n_real_clusters + (
         1 if n_noise_best > 0 else 0
     )  # real clusters + noise cluster if exists
@@ -471,7 +472,7 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
         print("Assigning all points to a single cluster due to too many clusters.")
 
         # Create single cluster assignment (all points go to cluster 1, no noise)
-        best_labels = np.ones(n_samples, dtype=int)  # All points assigned to cluster 1
+        best_labels = np.ones(n_samples, dtype=int)
         best_n_real_clusters = 1
         best_min_size = "N/A (single cluster - too many clusters)"
         best_score = "N/A (single cluster - too many clusters)"
@@ -479,7 +480,9 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
         best_ch_score = "N/A (single cluster)"
 
         print(f"Final result: 1 cluster with all {n_samples} samples")
-    elif best_score < dbcv_threshold:
+    elif (
+        isinstance(best_score, (int, float)) and best_score < dbcv_threshold
+    ):  # <-- THIS IS THE KEY FIX
         print(
             f"\nDBCV threshold check: Best DBCV ({best_score:.4f}) < threshold ({dbcv_threshold})"
         )
@@ -488,13 +491,11 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
         )
 
         # Create single cluster assignment (all points go to cluster 1, no noise)
-        best_labels = np.ones(n_samples, dtype=int)  # All points assigned to cluster 1
+        best_labels = np.ones(n_samples, dtype=int)
         best_n_real_clusters = 1
         best_min_size = "N/A (single cluster - poor quality)"
         best_score = "N/A (single cluster - poor quality)"
         n_noise_best = 0
-
-        # Calculate CH score for single cluster (will be undefined, but we'll note it)
         best_ch_score = "N/A (single cluster)"
 
         print(f"Final result: 1 cluster with all {n_samples} samples")
@@ -509,17 +510,18 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
         else:
             best_ch_score = -1
 
-        print(
-            f"\nBest result: min_cluster_size={best_min_size}, {best_n_real_clusters} real clusters, {n_noise_best} noise points, DBCV={best_score:.4f}, CH={best_ch_score:.2f}"
-        )
+        # Only print numeric DBCV scores with formatting
+        if isinstance(best_score, (int, float)):
+            print(
+                f"\nBest result: min_cluster_size={best_min_size}, {best_n_real_clusters} real clusters, {n_noise_best} noise points, DBCV={best_score:.4f}, CH={best_ch_score:.2f}"
+            )
+        else:
+            print(
+                f"\nBest result: {best_n_real_clusters} real clusters, {n_noise_best} noise points, Reason: {best_score}"
+            )
 
     # Create output directory
-    output_dir = f"clusters_final_final/{filename_without_ext}"
-    os.makedirs(output_dir, exist_ok=True)
-    print(f"Saving results to {output_dir}/")
-
-    # Create output directory
-    output_dir = f"clusters_final_final/{filename_without_ext}"
+    output_dir = f"clusters_final_final_emb/{filename_without_ext}"
     os.makedirs(output_dir, exist_ok=True)
     print(f"Saving results to {output_dir}/")
 
@@ -531,6 +533,9 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
             {
                 "text": texts[i],
                 "preds": preds[i],
+                "embedding": embeddings[
+                    i
+                ].tolist(),  # Add embedding as list for JSON compatibility
                 "cluster_id": int(
                     best_labels[i]
                 ),  # Convert to regular int for JSON compatibility
