@@ -84,7 +84,7 @@ for filename in files:
 
                     # Write batch if buffer is full
                     if len(preds_buffers[preds_suffix]) >= batch_size:
-                        output_path = f"../data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/sm/{lang}_embeds_{preds_suffix}.pkl"
+                        output_path = f"../data/model_embeds/concat/bge-m3-fold-6/th-optimised/sm/{lang}_embeds_{preds_suffix}.pkl"
 
                         # Load existing data if file exists
                         existing_data = []
@@ -113,7 +113,7 @@ for filename in files:
     print("\nSaving final batches...")
     for preds_suffix, buffer in preds_buffers.items():
         if buffer:
-            output_path = f"../data/model_embeds/cleaned/bge-m3-fold-6/th-optimised/sm/{lang}_embeds_{preds_suffix}.pkl"
+            output_path = f"../data/model_embeds/concat/bge-m3-fold-6/th-optimised/sm/{lang}_embeds_{preds_suffix}.pkl"
 
             # Load existing data if file exists
             existing_data = []
