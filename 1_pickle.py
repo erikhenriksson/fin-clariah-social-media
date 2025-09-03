@@ -8,7 +8,9 @@ from collections import defaultdict
 csv.field_size_limit(10**7)  # 10MB limit
 
 # Create output directory
-os.makedirs("../data/model_embeds/concat/bge-m3-fold-6/th-optimised/sm", exist_ok=True)
+os.makedirs(
+    "../data/model_embeds/concat/xlm-r-reference/th-optimised/sm", exist_ok=True
+)
 
 # Process each file
 files = ["en_embeds.tsv", "fi_embeds.tsv", "sv_embeds.tsv"]
@@ -16,7 +18,7 @@ target_values = {"ID", "NB", "OB"}
 
 for filename in files:
     print(f"\n=== Processing {filename} ===")
-    input_path = f"../data/model_embeds/concat/bge-m3-fold-6/th-optimised/{filename}"
+    input_path = f"../data/model_embeds/concat/xlm-r-reference/th-optimised/{filename}"
     lang = filename.split("_")[0]  # Extract language code
 
     # Dictionary to accumulate rows for each preds combination
@@ -84,7 +86,7 @@ for filename in files:
 
                     # Write batch if buffer is full
                     if len(preds_buffers[preds_suffix]) >= batch_size:
-                        output_path = f"../data/model_embeds/concat/bge-m3-fold-6/th-optimised/sm/{lang}_embeds_{preds_suffix}.pkl"
+                        output_path = f"../data/model_embeds/concat/xlm-r-reference/th-optimised/sm/{lang}_embeds_{preds_suffix}.pkl"
 
                         # Load existing data if file exists
                         existing_data = []
@@ -113,7 +115,7 @@ for filename in files:
     print("\nSaving final batches...")
     for preds_suffix, buffer in preds_buffers.items():
         if buffer:
-            output_path = f"../data/model_embeds/concat/bge-m3-fold-6/th-optimised/sm/{lang}_embeds_{preds_suffix}.pkl"
+            output_path = f"../data/model_embeds/concat/xlm-r-reference/th-optimised/sm/{lang}_embeds_{preds_suffix}.pkl"
 
             # Load existing data if file exists
             existing_data = []
