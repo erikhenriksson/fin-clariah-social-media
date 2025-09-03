@@ -34,6 +34,7 @@ for filename in files:
         header = next(reader)
         text_index = header.index("text")
         embed_last_index = header.index("embed_last")
+        embed_ref_index = header.index("embed_ref")
         preds_index = header.index("preds")
 
         print("Processing rows and grouping by preds...")
@@ -58,10 +59,14 @@ for filename in files:
                     # Extract the three columns we want
                     text = row[text_index]
                     embed_last_str = row[embed_last_index]
+                    embed_ref_str = row[embed_ref_index]
 
                     # Parse embedding and take index [0] to unwrap nested list
                     embed_last_nested = ast.literal_eval(embed_last_str)
                     embed_last = embed_last_nested[0]  # Get the actual embedding
+
+                    embed_ref_nested = ast.literal_eval(embed_ref_str)
+                    embed_ref = embed_ref_nested[0]  # Get the actual embedding
 
                     # Create filename suffix from preds (sorted for consistency)
                     preds_suffix = "-".join(sorted(preds_list))
@@ -70,6 +75,7 @@ for filename in files:
                     row_data = {
                         "text": text,
                         "embed_last": embed_last,
+                        "embed_ref": embed_ref,
                         "preds": preds_list,
                     }
 
