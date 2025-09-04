@@ -12,7 +12,7 @@ from sklearn.metrics import calinski_harabasz_score
 
 # Configuration
 MAX_CLUSTERS = 5
-EMBEDDING_TYPES = ["embed_ref", "embeds_last"]
+EMBEDDING_TYPES = ["embed_ref", "embed_last"]
 
 
 class ClusteringConfig:
