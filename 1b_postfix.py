@@ -47,7 +47,7 @@ target_values = {"ID", "NB", "OB"}
 
 # Process each language
 languages = ["en", "fi", "sv"]
-base_path = "../data/model_embeds/concat/bge-m3-fold-6/th-optimised/sm"
+base_path = "../data/model_embeds/concat/xlm-r-reference/th-optimised/sm"
 
 for lang in languages:
     print(f"\n=== Processing {lang} files ===")
