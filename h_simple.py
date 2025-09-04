@@ -10,6 +10,7 @@ import umap
 from sklearn.metrics import calinski_harabasz_score
 
 MAX_CLUSTERS = 5
+EMBEDDING = "embed_ref"
 
 
 def get_embeddings_hash(embeddings):
@@ -235,7 +236,7 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
 
     # Extract data
     try:
-        embeddings = np.array([row["embed_ref"] for row in data])
+        embeddings = np.array([row[EMBEDDING] for row in data])
         texts = [row["text"] for row in data]
         preds = [row["preds"] for row in data]
     except KeyError as e:
@@ -701,7 +702,7 @@ def main():
 
     # Create cache directory relative to script location
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    cache_dir = os.path.join(script_dir, "umap_cache")
+    cache_dir = os.path.join(script_dir, f"umap_cache_{EMBEDDING}")
     print(f"\nCache directory: {cache_dir}")
 
     # Process each file
