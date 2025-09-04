@@ -3,12 +3,11 @@ import os
 import pickle
 import sys
 
+import hdbscan
 import matplotlib.pyplot as plt
 import numpy as np
 import umap
 from sklearn.metrics import calinski_harabasz_score
-
-import hdbscan
 
 MAX_CLUSTERS = 5
 
@@ -236,7 +235,7 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
 
     # Extract data
     try:
-        embeddings = np.array([row["embed_last"] for row in data])
+        embeddings = np.array([row["embed_ref"] for row in data])
         texts = [row["text"] for row in data]
         preds = [row["preds"] for row in data]
     except KeyError as e:
@@ -521,7 +520,7 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
             )
 
     # Create output directory
-    output_dir = f"clusters_final_final_emb/{filename_without_ext}"
+    output_dir = f"clusters_production/{filename_without_ext}"
     os.makedirs(output_dir, exist_ok=True)
     print(f"Saving results to {output_dir}/")
 
@@ -547,14 +546,6 @@ def process_file(pkl_file, cache_dir, dbcv_threshold=0.3):
     with open(pickle_output_path, "wb") as f:
         pickle.dump(clustered_data, f)
     print(f"Clustered data saved to {pickle_output_path}")
-
-    # Optional: Also save as JSON for easier inspection
-    json_output_path = f"{output_dir}/clustered_data.json"
-    import json
-
-    with open(json_output_path, "w", encoding="utf-8") as f:
-        json.dump(clustered_data, f, indent=2, ensure_ascii=False)
-    print(f"Clustered data also saved as JSON to {json_output_path}")
 
     # Plot 2D UMAP with clusters
     print("Creating UMAP visualization...")
