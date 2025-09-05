@@ -88,7 +88,10 @@ def load_or_compute_umap(
         f"Computing {n_components}D UMAP (n_neighbors={n_neighbors}, min_dist={min_dist})..."
     )
     reducer = umap.UMAP(
-        n_components=n_components, n_neighbors=n_neighbors, min_dist=min_dist
+        n_components=n_components,
+        n_neighbors=n_neighbors,
+        min_dist=min_dist,
+        core_dist_n_jobs=1,
     )
     result = reducer.fit_transform(embeddings)
 
