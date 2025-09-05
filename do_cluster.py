@@ -24,7 +24,7 @@ class ClusteringConfig:
         umap_min_dist_2d: float = 0.1,
         min_dataset_size: int = 1000,
         output_base_dir: str = "clusters_output",
-        cache_dir: str = "umap_cache_multi",
+        cache_dir: str = "clusters_cache",
     ):
         self.max_clusters = max_clusters
         self.dbcv_threshold = dbcv_threshold
