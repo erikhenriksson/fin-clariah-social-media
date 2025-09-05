@@ -91,7 +91,6 @@ def load_or_compute_umap(
         n_components=n_components,
         n_neighbors=n_neighbors,
         min_dist=min_dist,
-        core_dist_n_jobs=1,
     )
     result = reducer.fit_transform(embeddings)
 
@@ -119,7 +118,10 @@ def load_or_compute_hdbscan(
 
     print(f"Computing HDBSCAN (min_cluster_size={min_cluster_size})...")
     clusterer = hdbscan.HDBSCAN(
-        min_cluster_size=min_cluster_size, min_samples=1, gen_min_span_tree=True
+        min_cluster_size=min_cluster_size,
+        min_samples=1,
+        gen_min_span_tree=True,
+        core_dist_n_jobs=1,
     )
     hdbscan_labels = clusterer.fit_predict(embeddings_50d)
 
