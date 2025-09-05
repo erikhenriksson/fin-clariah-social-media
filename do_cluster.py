@@ -425,6 +425,7 @@ def parse_filename(pkl_file: str) -> Tuple[str, str]:
         if part in ["sv", "en", "fi"]:
             language = part
         elif part != "embeds":
+            register = part
 
     if language is None or register is None:
         raise ValueError(
