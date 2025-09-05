@@ -16,16 +16,16 @@ from sklearn.metrics import calinski_harabasz_score
 class ClusteringConfig:
     def __init__(
         self,
-        max_clusters: int = 5,
-        dbcv_threshold: float = 0.3,
-        min_absolute_size: int = 100,
-        min_percentage: float = 0.02,
+        max_clusters: int = 100,
+        dbcv_threshold: float = 0.5,
+        min_absolute_size: int = 150,
+        min_percentage: float = 0.05,
         umap_50d_neighbors: int = 30,
         umap_2d_neighbors: int = 15,
         umap_min_dist_50d: float = 0.0,
         umap_min_dist_2d: float = 0.1,
         min_dataset_size: int = 1000,
-        output_base_dir: str = "clusters_output",
+        output_base_dir: str = "clusters_output_final",
         cache_dir: str = "clusters_cache",
     ):
         self.max_clusters = max_clusters
