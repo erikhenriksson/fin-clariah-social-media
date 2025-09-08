@@ -25,7 +25,7 @@ class ClusteringConfig:
         umap_min_dist_50d: float = 0.0,
         umap_min_dist_2d: float = 0.1,
         min_dataset_size: int = 1000,
-        output_base_dir: str = "clusters_output_final",
+        output_base_dir: str = "clusters_output_final_2",
         cache_dir: str = "clusters_cache",
     ):
         # self.max_clusters = max_clusters
