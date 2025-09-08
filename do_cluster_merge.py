@@ -437,7 +437,7 @@ def create_combined_visualization(
                 embeddings_2d[reg_mask, 0],
                 embeddings_2d[reg_mask, 1],
                 c=colors[i % len(colors)],
-                marker=register_markers[register],
+                # marker=register_markers[register],
                 s=30,
                 alpha=0.7,
                 label=register,
