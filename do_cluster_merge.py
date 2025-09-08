@@ -16,9 +16,9 @@ from sklearn.metrics import calinski_harabasz_score
 class ClusteringConfig:
     def __init__(
         self,
-        max_clusters: int = 100,
-        dbcv_threshold: float = 0.5,
-        min_absolute_size: int = 150,
+        # max_clusters: int = 1000000,
+        dbcv_threshold: float = 0.3,
+        min_absolute_size: int = 1000000,
         min_percentage: float = 0.05,
         umap_50d_neighbors: int = 30,
         umap_2d_neighbors: int = 15,
@@ -28,7 +28,7 @@ class ClusteringConfig:
         output_base_dir: str = "clusters_output_final",
         cache_dir: str = "clusters_cache",
     ):
-        self.max_clusters = max_clusters
+        # self.max_clusters = max_clusters
         self.dbcv_threshold = dbcv_threshold
         self.min_absolute_size = min_absolute_size
         self.min_percentage = min_percentage
@@ -171,7 +171,8 @@ def calculate_min_cluster_sizes(
     n_samples: int, min_absolute_size: int, min_percentage: float
 ) -> List[int]:
     """Calculate min_cluster_size values to test"""
-    min_cluster_size = max(min_absolute_size, int(n_samples * min_percentage))
+    # min_cluster_size = max(min_absolute_size, int(n_samples * min_percentage))
+    min_cluster_size = int(n_samples * min_percentage)
     max_k = n_samples // min_cluster_size
 
     if max_k < 2:
@@ -234,16 +235,16 @@ def apply_quality_filters(
     result: Dict[str, Any], config: ClusteringConfig
 ) -> Dict[str, Any]:
     """Apply quality filters and force single cluster if needed"""
-    n_real_clusters = result["n_real_clusters"]
-    n_noise = result["n_noise"]
+    # n_real_clusters = result["n_real_clusters"]
+    # n_noise = result["n_noise"]
     dbcv_score = result["dbcv_score"]
     n_samples = len(result["labels"])
 
     # Check too many clusters
-    total_clusters = n_real_clusters + (1 if n_noise > 0 else 0)
-    if total_clusters > config.max_clusters:
-        print(f"Too many clusters: {total_clusters} > {config.max_clusters}")
-        return create_single_cluster_result(n_samples, "too many clusters")
+    # total_clusters = n_real_clusters + (1 if n_noise > 0 else 0)
+    # if total_clusters > config.max_clusters:
+    #    print(f"Too many clusters: {total_clusters} > {config.max_clusters}")
+    #    return create_single_cluster_result(n_samples, "too many clusters")
 
     # Check DBCV threshold
     if isinstance(dbcv_score, (int, float)) and dbcv_score < config.dbcv_threshold:
@@ -488,7 +489,7 @@ def save_results_summary(
     with open(f"{output_dir}/hdbscan_results.txt", "w") as f:
         f.write(f"Embedding type: {embed_type}\n")
         f.write(f"DBCV threshold: {config.dbcv_threshold}\n")
-        f.write(f"Max clusters allowed: {config.max_clusters}\n")
+        # f.write(f"Max clusters allowed: {config.max_clusters}\n")
         f.write(f"Clustering scheme: Noise = Cluster 0, Real clusters = 1, 2, 3, ...\n")
 
         if registers:
