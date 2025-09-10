@@ -19,9 +19,9 @@ class ClusteringConfig:
 
     def __init__(
         self,
-        dbcv_threshold: float = 0.2,
+        dbcv_threshold: float = 0,
         min_absolute_size: int = 100,
-        min_percentage: float = 0.05,
+        min_percentage: float = 0.02,
         umap_min_dist_50d: float = 0.0,
         umap_min_dist_2d: float = 0.1,
         min_dataset_size: int = 1000,
