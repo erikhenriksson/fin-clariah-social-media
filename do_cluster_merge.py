@@ -167,6 +167,7 @@ def load_or_compute_hdbscan(
         cluster_selection_epsilon=0.0,
         algorithm="best",
         core_dist_n_jobs=1,
+        gen_min_span_tree=True,
     )
     hdbscan_labels = clusterer.fit_predict(embeddings_50d)
 
