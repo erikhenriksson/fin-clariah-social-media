@@ -1,6 +1,7 @@
 import argparse
 import glob
 import hashlib
+import math
 import os
 import pickle
 import sys
@@ -14,31 +15,71 @@ from sklearn.metrics import calinski_harabasz_score
 
 
 class ClusteringConfig:
+    """Configuration class for clustering parameters"""
+
     def __init__(
         self,
-        # max_clusters: int = 1000000,
-        dbcv_threshold: float = 0.3,
-        min_absolute_size: int = 1000000,
+        dbcv_threshold: float = 0.2,
+        min_absolute_size: int = 100,
         min_percentage: float = 0.05,
-        umap_50d_neighbors: int = 30,
-        umap_2d_neighbors: int = 15,
         umap_min_dist_50d: float = 0.0,
         umap_min_dist_2d: float = 0.1,
         min_dataset_size: int = 1000,
-        output_base_dir: str = "clusters_output_final_2",
+        merge_min_samples: int = 100,  # New: minimum samples for merge mode
+        output_base_dir: str = "clusters_output_final_3",
         cache_dir: str = "clusters_cache",
     ):
-        # self.max_clusters = max_clusters
         self.dbcv_threshold = dbcv_threshold
         self.min_absolute_size = min_absolute_size
         self.min_percentage = min_percentage
-        self.umap_50d_neighbors = umap_50d_neighbors
-        self.umap_2d_neighbors = umap_2d_neighbors
         self.umap_min_dist_50d = umap_min_dist_50d
         self.umap_min_dist_2d = umap_min_dist_2d
         self.min_dataset_size = min_dataset_size
+        self.merge_min_samples = merge_min_samples
         self.output_base_dir = output_base_dir
         self.cache_dir = cache_dir
+
+
+def calculate_optimal_neighbors(n_samples: int, n_components: int) -> int:
+    """
+    Calculate optimal number of neighbors based on dataset size and target dimensions.
+
+    Based on research:
+    - McInnes et al. (2018): n_neighbors should scale with log(n_samples)
+    - For manifold learning: neighbors should be 2-3x the intrinsic dimensionality
+    - Empirical studies suggest sqrt(n_samples) as good starting point for large datasets
+
+    Args:
+        n_samples: Number of samples in dataset
+        n_components: Target dimensionality
+
+    Returns:
+        Optimal number of neighbors
+    """
+    if n_samples <= 10:
+        return max(2, n_samples - 1)
+
+    # Base calculation using log scaling with square root component
+    # This balances local vs global structure preservation
+    log_component = max(5, int(3 * math.log10(n_samples)))
+    sqrt_component = max(10, int(math.sqrt(n_samples) * 0.3))
+
+    # Take geometric mean to balance both approaches
+    base_neighbors = int(math.sqrt(log_component * sqrt_component))
+
+    # Adjust for target dimensionality
+    # Higher dimensions need more neighbors for stable embeddings
+    dim_factor = 1.0 + (n_components / 100.0)  # Modest scaling with dimensions
+    neighbors = int(base_neighbors * dim_factor)
+
+    # Apply bounds
+    min_neighbors = max(5, int(0.005 * n_samples))  # At least 0.5% of data
+    max_neighbors = min(200, int(0.1 * n_samples))  # At most 10% of data
+
+    neighbors = max(min_neighbors, min(neighbors, max_neighbors))
+    neighbors = min(neighbors, n_samples - 1)  # Can't exceed sample size - 1
+
+    return neighbors
 
 
 def get_embeddings_hash(embeddings: np.ndarray) -> str:
@@ -46,25 +87,12 @@ def get_embeddings_hash(embeddings: np.ndarray) -> str:
     return hashlib.md5(embeddings.tobytes()).hexdigest()[:16]
 
 
-def get_umap_cache_path(
-    cache_dir: str,
-    embeddings_hash: str,
-    n_components: int,
-    n_neighbors: int,
-    min_dist: float,
+def get_cache_path(
+    cache_dir: str, embeddings_hash: str, operation: str, **params
 ) -> str:
-    """Generate cache filepath for UMAP results"""
-    filename = (
-        f"umap_{n_components}d_nn{n_neighbors}_md{min_dist:.3f}_{embeddings_hash}.pkl"
-    )
-    return os.path.join(cache_dir, filename)
-
-
-def get_hdbscan_cache_path(
-    cache_dir: str, embeddings_hash: str, min_cluster_size: int
-) -> str:
-    """Generate cache filepath for HDBSCAN results"""
-    filename = f"hdbscan_mcs{min_cluster_size}_{embeddings_hash}.pkl"
+    """Generate cache filepath for any operation"""
+    param_str = "_".join(f"{k}{v}" for k, v in sorted(params.items()))
+    filename = f"{operation}_{param_str}_{embeddings_hash}.pkl"
     return os.path.join(cache_dir, filename)
 
 
@@ -73,12 +101,20 @@ def load_or_compute_umap(
     cache_dir: str,
     embeddings_hash: str,
     n_components: int,
-    n_neighbors: int,
     min_dist: float,
 ) -> np.ndarray:
-    """Load UMAP from cache or compute if not cached"""
-    cache_path = get_umap_cache_path(
-        cache_dir, embeddings_hash, n_components, n_neighbors, min_dist
+    """Load UMAP from cache or compute with optimal parameters"""
+
+    # Calculate optimal neighbors
+    n_neighbors = calculate_optimal_neighbors(len(embeddings), n_components)
+
+    cache_path = get_cache_path(
+        cache_dir,
+        embeddings_hash,
+        "umap",
+        nc=n_components,
+        nn=n_neighbors,
+        md=f"{min_dist:.3f}",
     )
 
     if os.path.exists(cache_path):
@@ -89,10 +125,12 @@ def load_or_compute_umap(
     print(
         f"Computing {n_components}D UMAP (n_neighbors={n_neighbors}, min_dist={min_dist})..."
     )
+
     reducer = umap.UMAP(
         n_components=n_components,
         n_neighbors=n_neighbors,
         min_dist=min_dist,
+        random_state=42,  # For reproducibility
     )
     result = reducer.fit_transform(embeddings)
 
@@ -111,7 +149,10 @@ def load_or_compute_hdbscan(
     min_cluster_size: int,
 ) -> Dict[str, Any]:
     """Load HDBSCAN from cache or compute if not cached"""
-    cache_path = get_hdbscan_cache_path(cache_dir, embeddings_hash, min_cluster_size)
+
+    cache_path = get_cache_path(
+        cache_dir, embeddings_hash, "hdbscan", mcs=min_cluster_size
+    )
 
     if os.path.exists(cache_path):
         print(f"Loading cached HDBSCAN result (min_cluster_size={min_cluster_size})")
@@ -119,10 +160,12 @@ def load_or_compute_hdbscan(
             return pickle.load(f)
 
     print(f"Computing HDBSCAN (min_cluster_size={min_cluster_size})...")
+
     clusterer = hdbscan.HDBSCAN(
         min_cluster_size=min_cluster_size,
         min_samples=1,
-        gen_min_span_tree=True,
+        cluster_selection_epsilon=0.0,
+        algorithm="best",
         core_dist_n_jobs=1,
     )
     hdbscan_labels = clusterer.fit_predict(embeddings_50d)
@@ -146,11 +189,11 @@ def load_or_compute_hdbscan(
                 embeddings_50d[non_noise_mask], labels[non_noise_mask]
             )
         else:
-            dbcv_score = -1
-            ch_score = -1
+            dbcv_score = -1.0
+            ch_score = -1.0
     else:
-        dbcv_score = -1
-        ch_score = -1
+        dbcv_score = -1.0
+        ch_score = -1.0
 
     result = {
         "labels": labels,
@@ -170,19 +213,21 @@ def load_or_compute_hdbscan(
 def calculate_min_cluster_sizes(
     n_samples: int, min_absolute_size: int, min_percentage: float
 ) -> List[int]:
-    """Calculate min_cluster_size values to test"""
-    # min_cluster_size = max(min_absolute_size, int(n_samples * min_percentage))
-    min_cluster_size = int(n_samples * min_percentage)
-    max_k = n_samples // min_cluster_size
+    """Calculate min_cluster_size values to test based on dataset size"""
+    min_cluster_size = max(min_absolute_size, int(n_samples * min_percentage))
+    max_reasonable_clusters = min(50, n_samples // min_cluster_size)
 
-    if max_k < 2:
+    if max_reasonable_clusters < 2:
         return []
 
-    return [
-        n_samples // k
-        for k in range(2, max_k + 1)
-        if n_samples // k >= min_cluster_size
-    ]
+    # Generate cluster sizes to test
+    cluster_sizes = []
+    for k in range(2, max_reasonable_clusters + 1):
+        size = n_samples // k
+        if size >= min_cluster_size:
+            cluster_sizes.append(size)
+
+    return sorted(set(cluster_sizes), reverse=True)  # Test larger clusters first
 
 
 def find_best_clustering(
@@ -192,13 +237,13 @@ def find_best_clustering(
     min_cluster_sizes: List[int],
 ) -> Dict[str, Any]:
     """Find best clustering by testing different min_cluster_size values"""
-    best_score = -1
+    best_score = -1.0
     best_result = None
     all_results = []
 
     for min_size in min_cluster_sizes:
         k = len(embeddings_50d) // min_size
-        print(f"Testing k={k}, min_cluster_size={min_size}")
+        print(f"Testing k≈{k}, min_cluster_size={min_size}")
 
         result = load_or_compute_hdbscan(
             embeddings_50d, cache_dir, embeddings_hash, min_size
@@ -206,28 +251,31 @@ def find_best_clustering(
         result["min_size"] = min_size
         all_results.append(result)
 
-        # Report cluster info
+        # Report cluster info with size distribution
         if result["n_real_clusters"] > 1:
             unique_clusters = [c for c in set(result["labels"]) if c > 0]
             cluster_sizes = [np.sum(result["labels"] == c) for c in unique_clusters]
-            size_info = f" (sizes: {cluster_sizes})"
+            size_stats = f"sizes: [{min(cluster_sizes)}-{max(cluster_sizes)}]"
         else:
-            size_info = ""
+            size_stats = "no clusters"
 
         print(
-            f"  → {result['n_real_clusters']} real clusters + {result['n_noise']} noise, "
-            f"DBCV: {result['dbcv_score']:.4f}, CH: {result['ch_score']:.2f}{size_info}"
+            f"  → {result['n_real_clusters']} clusters + {result['n_noise']} noise, "
+            f"DBCV: {result['dbcv_score']:.4f}, CH: {result['ch_score']:.1f} ({size_stats})"
         )
 
+        # Select best based on DBCV score
         if result["dbcv_score"] > best_score and result["n_real_clusters"] > 1:
             best_score = result["dbcv_score"]
             best_result = result.copy()
 
-    if best_result is None:
-        # Use result with most real clusters as fallback
+    # Fallback if no good clustering found
+    if best_result is None and all_results:
         best_result = max(all_results, key=lambda x: x["n_real_clusters"])
 
-    best_result["all_results"] = all_results
+    if best_result is not None:
+        best_result["all_results"] = all_results
+
     return best_result
 
 
@@ -235,21 +283,17 @@ def apply_quality_filters(
     result: Dict[str, Any], config: ClusteringConfig
 ) -> Dict[str, Any]:
     """Apply quality filters and force single cluster if needed"""
-    # n_real_clusters = result["n_real_clusters"]
-    # n_noise = result["n_noise"]
-    dbcv_score = result["dbcv_score"]
-    n_samples = len(result["labels"])
+    if result is None:
+        n_samples = 0  # This shouldn't happen, but handle gracefully
+        return create_single_cluster_result(n_samples, "no valid clustering found")
 
-    # Check too many clusters
-    # total_clusters = n_real_clusters + (1 if n_noise > 0 else 0)
-    # if total_clusters > config.max_clusters:
-    #    print(f"Too many clusters: {total_clusters} > {config.max_clusters}")
-    #    return create_single_cluster_result(n_samples, "too many clusters")
+    dbcv_score = result.get("dbcv_score", -1.0)
+    n_samples = len(result.get("labels", []))
 
     # Check DBCV threshold
     if isinstance(dbcv_score, (int, float)) and dbcv_score < config.dbcv_threshold:
-        print(f"Poor quality: DBCV {dbcv_score:.4f} < {config.dbcv_threshold}")
-        return create_single_cluster_result(n_samples, "poor quality")
+        print(f"Quality too low: DBCV {dbcv_score:.4f} < {config.dbcv_threshold}")
+        return create_single_cluster_result(n_samples, "quality below threshold")
 
     return result
 
@@ -296,154 +340,67 @@ def save_clustered_data(
         pickle.dump(clustered_data, f)
 
 
-def create_combined_visualization(
+def create_visualizations(
     result: Dict[str, Any],
     embeddings_2d: np.ndarray,
     registers: List[str],
     embed_type: str,
     output_dir: str,
-    config: ClusteringConfig,
     is_merged: bool = False,
 ) -> None:
-    """Create visualizations with both cluster and register information"""
+    """Create cluster and register visualizations"""
     print(f"Creating visualizations for {embed_type}")
-
     os.makedirs(output_dir, exist_ok=True)
 
-    # Get unique registers and clusters
-    unique_registers = sorted(set(registers))
-    unique_clusters = sorted(set(result["labels"]))
-
-    # Create markers for registers
-    markers = ["o", "s", "^", "D", "v", "<", ">", "p", "*", "h", "H", "+", "x"]
-    register_markers = {
-        reg: markers[i % len(markers)] for i, reg in enumerate(unique_registers)
-    }
-
-    # Colors for clusters (using tab10 colormap)
-    colors = plt.cm.tab10(np.linspace(0, 1, max(10, len(unique_clusters))))
-    cluster_colors = {
-        cluster: colors[i % len(colors)] for i, cluster in enumerate(unique_clusters)
-    }
-
-    # Title generation
+    # Generate title
     n_real_clusters = result["n_real_clusters"]
     n_noise = result["n_noise"]
     dbcv_score = result["dbcv_score"]
 
-    if n_real_clusters == 1:
-        if isinstance(dbcv_score, str):
-            if "too many clusters" in dbcv_score:
-                base_title = (
-                    f"1 cluster (forced due to > {config.max_clusters} clusters)"
-                )
-            else:
-                base_title = (
-                    f"1 cluster (forced due to low DBCV < {config.dbcv_threshold})"
-                )
-        else:
-            base_title = f"1 cluster"
+    if isinstance(dbcv_score, str):
+        title = f"Single cluster ({dbcv_score.split(' - ')[-1]})"
     else:
         min_size = result.get("min_size", "unknown")
-        base_title = f"{n_real_clusters} clusters + {n_noise} noise (min_size={min_size}, DBCV: {dbcv_score:.3f})"
+        title = f"{n_real_clusters} clusters + {n_noise} noise (min_size={min_size}, DBCV: {dbcv_score:.3f})"
 
-    if is_merged:
-        # Combined plot with markers for registers and colors for clusters
+    # Main cluster visualization
+    plt.figure(figsize=(12, 8))
+    scatter = plt.scatter(
+        embeddings_2d[:, 0],
+        embeddings_2d[:, 1],
+        c=result["labels"],
+        cmap="tab20",
+        alpha=0.6,
+        s=20,
+        edgecolors="black",
+        linewidth=0.1,
+    )
+
+    plt.title(f"UMAP 2D: {title} - {embed_type}")
+    plt.xlabel("UMAP 1")
+    plt.ylabel("UMAP 2")
+    plt.colorbar(scatter, label="Cluster ID")
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/umap_clusters.png", dpi=300, bbox_inches="tight")
+    plt.close()
+
+    # Register visualization (if multiple registers)
+    if is_merged and len(set(registers)) > 1:
         plt.figure(figsize=(12, 8))
+        unique_registers = sorted(set(registers))
+        colors = plt.cm.Set3(np.linspace(0, 1, len(unique_registers)))
 
-        for register in unique_registers:
-            reg_mask = np.array(registers) == register
-            reg_x = embeddings_2d[reg_mask, 0]
-            reg_y = embeddings_2d[reg_mask, 1]
-            reg_clusters = result["labels"][reg_mask]
-
-            for cluster in unique_clusters:
-                cluster_mask = reg_clusters == cluster
-                if np.any(cluster_mask):
-                    plt.scatter(
-                        reg_x[cluster_mask],
-                        reg_y[cluster_mask],
-                        c=[cluster_colors[cluster]],
-                        marker=register_markers[register],
-                        s=30,
-                        alpha=0.7,
-                        label=f"Cluster {cluster}, {register}"
-                        if len(unique_registers) > 1
-                        else f"Cluster {cluster}",
-                        edgecolors="black",
-                        linewidth=0.3,
-                    )
-
-        plt.title(f"UMAP 2D: {base_title} - {embed_type}")
-        plt.xlabel("UMAP 1")
-        plt.ylabel("UMAP 2")
-
-        # Create custom legend
-        if len(unique_registers) > 1:
-            # Legend for markers (registers)
-            register_legend = [
-                plt.Line2D(
-                    [0],
-                    [0],
-                    marker=register_markers[reg],
-                    color="gray",
-                    linestyle="None",
-                    markersize=8,
-                    label=reg,
-                )
-                for reg in unique_registers
-            ]
-            # Legend for colors (clusters)
-            cluster_legend = [
-                plt.Line2D(
-                    [0],
-                    [0],
-                    marker="o",
-                    color=cluster_colors[cluster],
-                    linestyle="None",
-                    markersize=8,
-                    label=f"Cluster {cluster}",
-                )
-                for cluster in unique_clusters
-            ]
-
-            # Two separate legends
-            leg1 = plt.legend(
-                handles=register_legend,
-                title="Registers",
-                loc="upper left",
-                bbox_to_anchor=(1.02, 1),
-            )
-            leg2 = plt.legend(
-                handles=cluster_legend,
-                title="Clusters",
-                loc="upper left",
-                bbox_to_anchor=(1.02, 0.7),
-            )
-            plt.gca().add_artist(leg1)
-        else:
-            plt.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
-
-        plt.tight_layout()
-        plt.savefig(
-            f"{output_dir}/umap_clusters_combined.png", dpi=300, bbox_inches="tight"
-        )
-        plt.close()
-
-        # Separate register plot
-        plt.figure(figsize=(10, 8))
         for i, register in enumerate(unique_registers):
             reg_mask = np.array(registers) == register
             plt.scatter(
                 embeddings_2d[reg_mask, 0],
                 embeddings_2d[reg_mask, 1],
-                c=colors[i % len(colors)],
-                # marker=register_markers[register],
-                s=30,
-                alpha=0.7,
+                c=[colors[i]],
                 label=register,
+                alpha=0.7,
+                s=20,
                 edgecolors="black",
-                linewidth=0.3,
+                linewidth=0.1,
             )
 
         plt.title(f"UMAP 2D: Colored by Register - {embed_type}")
@@ -454,26 +411,6 @@ def create_combined_visualization(
         plt.savefig(f"{output_dir}/umap_registers.png", dpi=300, bbox_inches="tight")
         plt.close()
 
-    # Standard cluster plot (always create this)
-    plt.figure(figsize=(10, 8))
-    cluster_labels = result["labels"].copy()
-    scatter = plt.scatter(
-        embeddings_2d[:, 0],
-        embeddings_2d[:, 1],
-        c=cluster_labels,
-        cmap="tab10",
-        alpha=0.6,
-        s=15,
-    )
-
-    plt.title(f"UMAP 2D: {base_title} - {embed_type}")
-    plt.xlabel("UMAP 1")
-    plt.ylabel("UMAP 2")
-    plt.colorbar(scatter)
-    plt.tight_layout()
-    plt.savefig(f"{output_dir}/umap_clusters.png", dpi=300, bbox_inches="tight")
-    plt.close()
-
 
 def save_results_summary(
     result: Dict[str, Any],
@@ -482,51 +419,55 @@ def save_results_summary(
     config: ClusteringConfig,
     registers: List[str] = None,
 ) -> None:
-    """Save results summary to text file"""
+    """Save detailed results summary"""
     print(f"Saving results summary for {embed_type}")
-
     os.makedirs(output_dir, exist_ok=True)
-    with open(f"{output_dir}/hdbscan_results.txt", "w") as f:
+
+    with open(f"{output_dir}/clustering_results.txt", "w") as f:
+        f.write(f"Clustering Results Summary\n")
+        f.write(f"=" * 50 + "\n\n")
         f.write(f"Embedding type: {embed_type}\n")
         f.write(f"DBCV threshold: {config.dbcv_threshold}\n")
-        # f.write(f"Max clusters allowed: {config.max_clusters}\n")
-        f.write(f"Clustering scheme: Noise = Cluster 0, Real clusters = 1, 2, 3, ...\n")
+        f.write(f"Min absolute cluster size: {config.min_absolute_size}\n")
+        f.write(f"Min percentage cluster size: {config.min_percentage}\n\n")
 
         if registers:
             unique_registers = sorted(set(registers))
-            f.write(f"Registers included: {', '.join(unique_registers)}\n")
-            f.write(f"Total samples: {len(registers)}\n")
+            f.write(f"Registers: {', '.join(unique_registers)}\n")
+            f.write(f"Total samples: {len(registers)}\n\n")
 
+        # Main results
         if isinstance(result["dbcv_score"], str):
-            f.write(
-                f"Result: Single cluster (all samples), reason: {result['dbcv_score']}\n\n"
-            )
+            f.write(f"Result: {result['dbcv_score']}\n\n")
         else:
-            f.write(
-                f"Best result: min_cluster_size={result['min_size']}, "
-                f"{result['n_real_clusters']} real clusters, {result['n_noise']} noise points, "
-                f"DBCV={result['dbcv_score']}, CH={result['ch_score']}\n\n"
-            )
+            f.write(f"Best clustering:\n")
+            f.write(f"  Min cluster size: {result['min_size']}\n")
+            f.write(f"  Real clusters: {result['n_real_clusters']}\n")
+            f.write(f"  Noise points: {result['n_noise']}\n")
+            f.write(f"  DBCV score: {result['dbcv_score']:.4f}\n")
+            f.write(f"  Calinski-Harabasz score: {result['ch_score']:.2f}\n\n")
 
-        # Write detailed results if available
+        # Detailed results table
         if "all_results" in result:
-            f.write("All results (sorted by DBCV score):\n")
+            f.write("All tested configurations:\n")
+            f.write("-" * 80 + "\n")
             f.write(
-                "Rank | Min_Size | Real_Clusters | Noise_Points | DBCV Score | CH Score | Notes\n"
+                f"{'Rank':<4} {'MinSize':<8} {'Clusters':<8} {'Noise':<8} {'DBCV':<10} {'CH-Score':<10} {'Notes'}\n"
             )
             f.write("-" * 80 + "\n")
 
             sorted_results = sorted(
-                result["all_results"], key=lambda x: x["dbcv_score"], reverse=True
+                result["all_results"],
+                key=lambda x: x.get("dbcv_score", -1),
+                reverse=True,
             )
+
             for i, res in enumerate(sorted_results):
-                marker = (
-                    " <-- BEST" if res["min_size"] == result.get("min_size") else ""
-                )
+                marker = " ★" if res["min_size"] == result.get("min_size") else ""
                 f.write(
-                    f"{i + 1:4d} | {res['min_size']:8d} | {res['n_real_clusters']:12d} | "
-                    f"{res['n_noise']:11d} | {res['dbcv_score']:10.4f} | "
-                    f"{res['ch_score']:8.2f} |{marker}\n"
+                    f"{i + 1:<4} {res['min_size']:<8} {res['n_real_clusters']:<8} "
+                    f"{res['n_noise']:<8} {res['dbcv_score']:<10.4f} "
+                    f"{res['ch_score']:<10.2f} {marker}\n"
                 )
 
 
@@ -536,42 +477,53 @@ def save_cluster_examples(
     embed_type: str,
     output_dir: str,
     registers: List[str] = None,
+    max_examples: int = 15,
 ) -> None:
-    """Save text examples from each cluster"""
+    """Save representative text examples from each cluster"""
     print(f"Saving cluster examples for {embed_type}")
-
     os.makedirs(output_dir, exist_ok=True)
-    with open(f"{output_dir}/cluster_examples.txt", "w") as f:
+
+    with open(f"{output_dir}/cluster_examples.txt", "w", encoding="utf-8") as f:
         unique_clusters = sorted(set(labels))
 
         for cluster_id in unique_clusters:
             cluster_indices = np.where(labels == cluster_id)[0]
 
             if cluster_id == 0:
-                f.write(f"\n=== CLUSTER {cluster_id} (NOISE) - {embed_type} ===\n")
+                f.write(f"\n{'=' * 60}\n")
+                f.write(f"CLUSTER {cluster_id} (NOISE) - {embed_type}\n")
+                f.write(f"{'=' * 60}\n")
             else:
-                f.write(f"\n=== CLUSTER {cluster_id} - {embed_type} ===\n")
+                f.write(f"\n{'=' * 60}\n")
+                f.write(f"CLUSTER {cluster_id} - {embed_type}\n")
+                f.write(f"{'=' * 60}\n")
 
             f.write(f"Size: {len(cluster_indices)} samples\n")
 
+            # Register distribution if available
             if registers:
                 cluster_registers = [registers[i] for i in cluster_indices]
-                reg_counts = {
-                    reg: cluster_registers.count(reg) for reg in set(cluster_registers)
-                }
+                reg_counts = {}
+                for reg in cluster_registers:
+                    reg_counts[reg] = reg_counts.get(reg, 0) + 1
                 f.write(f"Register distribution: {reg_counts}\n")
 
-            f.write("\n")
+            f.write("\nExamples:\n")
+            f.write("-" * 40 + "\n")
 
-            # Get up to 20 random examples
+            # Sample examples
+            sample_size = min(max_examples, len(cluster_indices))
             sample_indices = np.random.choice(
-                cluster_indices, min(20, len(cluster_indices)), replace=False
+                cluster_indices, sample_size, replace=False
             )
 
             for i, idx in enumerate(sample_indices, 1):
-                text_clean = texts[idx].replace("\n", "\\n").replace("\r", "\\r")
+                text_clean = texts[idx].replace("\n", " ").replace("\r", " ").strip()
+                if len(text_clean) > 200:
+                    text_clean = text_clean[:197] + "..."
+
                 reg_info = f" [{registers[idx]}]" if registers else ""
-                f.write(f"{i}. {text_clean}{reg_info}\n")
+                f.write(f"{i:2d}. {text_clean}{reg_info}\n")
 
 
 def parse_filename(pkl_file: str) -> Tuple[str, str]:
@@ -582,33 +534,28 @@ def parse_filename(pkl_file: str) -> Tuple[str, str]:
     if "_embeds_" in basename:
         parts = basename.split("_embeds_")
         if len(parts) == 2:
-            language = parts[0]
-            register = parts[1]
-            return language, register
+            return parts[0], parts[1]
 
-    # Fallback to original parsing logic
+    # Fallback parsing
     parts = basename.split("_")
-    language = None
-    register = None
+    language = register = None
 
     for part in parts:
-        if part in ["sv", "en", "fi"]:
+        if part in ["sv", "en", "fi", "de", "fr", "es"]:  # Common language codes
             language = part
-        elif part != "embeds":
+        elif part not in ["embeds", language] and part:
             register = part
 
-    if language is None or register is None:
-        raise ValueError(
-            f"Could not parse language and register from filename: {pkl_file}"
-        )
+    if not language or not register:
+        raise ValueError(f"Cannot parse language and register from: {pkl_file}")
 
     return language, register
 
 
 def find_pickle_files(data_dir: str) -> List[str]:
-    """Find all pickle files in the data directory"""
+    """Find all pickle files in directory"""
     pattern = os.path.join(data_dir, "*.pkl")
-    return glob.glob(pattern)
+    return sorted(glob.glob(pattern))
 
 
 def group_files_by_language(pkl_files: List[str]) -> Dict[str, List[Tuple[str, str]]]:
@@ -622,20 +569,36 @@ def group_files_by_language(pkl_files: List[str]) -> Dict[str, List[Tuple[str, s
                 language_groups[language] = []
             language_groups[language].append((pkl_file, register))
         except ValueError as e:
-            print(f"Warning: Skipping file {pkl_file}: {e}")
+            print(f"Warning: Skipping {pkl_file}: {e}")
 
     return language_groups
 
 
-def filter_files_by_target_register(
-    files_and_registers: List[Tuple[str, str]], target_register: str
+def filter_files_by_register(
+    files_and_registers: List[Tuple[str, str]], target_register: str, min_samples: int
 ) -> List[Tuple[str, str]]:
-    """Filter files that contain the target register"""
+    """Filter files by target register and minimum sample size"""
     filtered = []
+
     for pkl_file, register in files_and_registers:
+        # Check if target register is in the register string
         register_parts = register.split("-")
-        if target_register in register_parts:
-            filtered.append((pkl_file, register))
+        if target_register not in register_parts:
+            continue
+
+        # Check file size (quick sample count check)
+        try:
+            with open(pkl_file, "rb") as f:
+                data = pickle.load(f)
+                if len(data) >= min_samples:
+                    filtered.append((pkl_file, register))
+                else:
+                    print(
+                        f"Skipping {pkl_file}: only {len(data)} samples < {min_samples}"
+                    )
+        except Exception as e:
+            print(f"Error checking {pkl_file}: {e}")
+
     return filtered
 
 
@@ -649,16 +612,14 @@ def load_and_merge_data(
     all_registers = []
 
     for pkl_file, original_register in files_to_merge:
-        print(f"Loading {pkl_file} (register: {original_register})")
+        print(f"Loading {os.path.basename(pkl_file)} (register: {original_register})")
 
         with open(pkl_file, "rb") as f:
             data = pickle.load(f)
 
-        # Extract data
+        # Extract basic data
         texts = [row["text"] for row in data]
         preds = [row["preds"] for row in data]
-
-        # Add register information for each sample
         registers = [original_register] * len(texts)
 
         all_texts.extend(texts)
@@ -694,48 +655,39 @@ def process_embedding_type(
     """Process clustering for a single embedding type"""
     n_samples = len(embeddings)
     print(
-        f"\nProcessing {embed_type}: {n_samples} samples with {embeddings.shape[1]}D embeddings"
+        f"\nProcessing {embed_type}: {n_samples} samples, {embeddings.shape[1]}D embeddings"
     )
 
     # Check minimum dataset size
-    if n_samples < config.min_dataset_size:
-        print(f"Dataset too small ({n_samples} < {config.min_dataset_size}), skipping")
-        return {"skipped": True, "reason": "too_small", "n_samples": n_samples}
+    min_required = config.merge_min_samples if is_merged else config.min_dataset_size
+    if n_samples < min_required:
+        print(f"Dataset too small ({n_samples} < {min_required}), skipping")
+        return {
+            "skipped": True,
+            "reason": "too_small",
+            "n_samples": n_samples,
+            "min_required": min_required,
+        }
 
     # Setup output directory
-    if is_merged:
-        output_dir = os.path.join(
-            config.output_base_dir, "merged", language, register_group, embed_type
-        )
-    else:
-        output_dir = os.path.join(
-            config.output_base_dir, language, register_group, embed_type
-        )
+    base_path = "merged" if is_merged else "individual"
+    output_dir = os.path.join(
+        config.output_base_dir, base_path, language, register_group, embed_type
+    )
 
     # Generate embeddings hash for caching
     embeddings_hash = get_embeddings_hash(embeddings)
     print(f"Embeddings hash: {embeddings_hash}")
 
-    # Adjust UMAP parameters for dataset size
-    umap_50d_neighbors = max(2, min(config.umap_50d_neighbors, n_samples - 1))
-    umap_2d_neighbors = max(2, min(config.umap_2d_neighbors, n_samples - 1))
+    # UMAP reductions with dynamic neighbor selection
+    print(f"Optimal neighbors for 50D: {calculate_optimal_neighbors(n_samples, 50)}")
+    print(f"Optimal neighbors for 2D: {calculate_optimal_neighbors(n_samples, 2)}")
 
-    # UMAP reductions
     embeddings_50d = load_or_compute_umap(
-        embeddings,
-        config.cache_dir,
-        embeddings_hash,
-        50,
-        umap_50d_neighbors,
-        config.umap_min_dist_50d,
+        embeddings, config.cache_dir, embeddings_hash, 50, config.umap_min_dist_50d
     )
     embeddings_2d = load_or_compute_umap(
-        embeddings,
-        config.cache_dir,
-        embeddings_hash,
-        2,
-        umap_2d_neighbors,
-        config.umap_min_dist_2d,
+        embeddings, config.cache_dir, embeddings_hash, 2, config.umap_min_dist_2d
     )
 
     # Calculate clustering parameters
@@ -744,24 +696,23 @@ def process_embedding_type(
     )
 
     if not min_cluster_sizes:
-        print("Dataset too small for clustering - forcing single cluster")
-        result = create_single_cluster_result(n_samples, "Dataset too small")
+        print("Dataset too small for meaningful clustering")
+        result = create_single_cluster_result(
+            n_samples, "dataset too small for clustering"
+        )
     else:
-        # Find best clustering
-        print(f"Testing {len(min_cluster_sizes)} different min_cluster_size values:")
+        print(f"Testing {len(min_cluster_sizes)} different cluster sizes")
         result = find_best_clustering(
             embeddings_50d, config.cache_dir, embeddings_hash, min_cluster_sizes
         )
-
-        # Apply quality filters
         result = apply_quality_filters(result, config)
 
-    # Save outputs
+    # Save all outputs
     save_clustered_data(
         result["labels"], embeddings, texts, preds, registers, embed_type, output_dir
     )
-    create_combined_visualization(
-        result, embeddings_2d, registers, embed_type, output_dir, config, is_merged
+    create_visualizations(
+        result, embeddings_2d, registers, embed_type, output_dir, is_merged
     )
     save_results_summary(result, embed_type, output_dir, config, registers)
     save_cluster_examples(result["labels"], texts, embed_type, output_dir, registers)
@@ -780,32 +731,34 @@ def load_data(
     pkl_file: str,
 ) -> Tuple[Dict[str, np.ndarray], List[str], List[Any], List[str]]:
     """Load and validate data from pickle file"""
-    print("Loading data...")
+    print(f"Loading data from {os.path.basename(pkl_file)}...")
 
     with open(pkl_file, "rb") as f:
         data = pickle.load(f)
 
-    # Extract embeddings for both types
-    embeddings_dict = {}
+    if not data:
+        raise RuntimeError("Empty dataset")
+
+    # Extract basic data
     texts = [row["text"] for row in data]
     preds = [row["preds"] for row in data]
 
-    # Try to get register from data, fallback to parsing filename
+    # Extract register information
     if "register" in data[0]:
         registers = [row["register"] for row in data]
     else:
-        # Fallback: parse from filename or use default
+        # Fallback to filename parsing
         try:
             _, register = parse_filename(pkl_file)
             registers = [register] * len(texts)
         except:
             registers = ["UNKNOWN"] * len(texts)
 
+    # Extract embeddings
+    embeddings_dict = {}
     for embed_type in ["embed_ref", "embed_last"]:
         if embed_type in data[0]:
             embeddings_dict[embed_type] = np.array([row[embed_type] for row in data])
-        else:
-            print(f"Warning: {embed_type} not found in data")
 
     if not embeddings_dict:
         raise RuntimeError("No valid embeddings found in data")
@@ -813,27 +766,23 @@ def load_data(
     return embeddings_dict, texts, preds, registers
 
 
-def process_file(pkl_file: str, config: ClusteringConfig) -> Dict[str, Any]:
+def process_single_file(pkl_file: str, config: ClusteringConfig) -> Dict[str, Any]:
     """Process a single pickle file"""
     print(f"\n{'=' * 80}")
-    print(f"Processing file: {pkl_file}")
+    print(f"Processing file: {os.path.basename(pkl_file)}")
     print(f"{'=' * 80}")
 
-    # Parse filename to get language and register
     try:
         language, register = parse_filename(pkl_file)
         print(f"Parsed: language={language}, register={register}")
     except ValueError as e:
-        print(f"Error: {e}")
-        return {"error": str(e)}
+        return {"error": f"Filename parsing failed: {e}"}
 
-    # Load data
     try:
         embeddings_dict, texts, preds, registers = load_data(pkl_file)
         print(f"Found embeddings: {list(embeddings_dict.keys())}")
     except Exception as e:
-        print(f"Error loading data: {e}")
-        return {"error": str(e)}
+        return {"error": f"Data loading failed: {e}"}
 
     # Process each embedding type
     results = {}
@@ -849,6 +798,7 @@ def process_file(pkl_file: str, config: ClusteringConfig) -> Dict[str, Any]:
                 language,
                 register,
                 config,
+                is_merged=False,
             )
             results[embed_key] = result
         except Exception as e:
@@ -872,24 +822,22 @@ def process_merged_dataset(
     """Process a merged dataset for a specific target register"""
     print(f"\n{'=' * 80}")
     print(f"Processing MERGED dataset: {language} - {target_register}")
-    print(f"Files to merge: {[f[0] for f in files_to_merge]}")
+    print(f"Files to merge: {[os.path.basename(f[0]) for f in files_to_merge]}")
     print(f"{'=' * 80}")
 
     try:
-        # Load and merge data
         embeddings_dict, texts, preds, registers = load_and_merge_data(files_to_merge)
         print(f"Merged dataset: {len(texts)} samples")
         print(f"Found embeddings: {list(embeddings_dict.keys())}")
 
-        # Print register distribution
+        # Show register distribution
         from collections import Counter
 
         reg_counts = Counter(registers)
         print(f"Register distribution: {dict(reg_counts)}")
 
     except Exception as e:
-        print(f"Error loading merged data: {e}")
-        return {"error": str(e)}
+        return {"error": f"Data merging failed: {e}"}
 
     # Process each embedding type
     results = {}
@@ -921,9 +869,10 @@ def process_merged_dataset(
 
 
 def run_merge_mode(data_dir: str, config: ClusteringConfig) -> None:
-    """Run clustering in merge mode"""
+    """Run clustering in merge mode with strict filtering"""
     print("Running in MERGE mode")
     print(f"Data directory: {data_dir}")
+    print(f"Minimum samples required: {config.merge_min_samples}")
 
     # Find all pickle files
     pkl_files = find_pickle_files(data_dir)
@@ -937,9 +886,10 @@ def run_merge_mode(data_dir: str, config: ClusteringConfig) -> None:
     language_groups = group_files_by_language(pkl_files)
     print(f"Languages found: {list(language_groups.keys())}")
 
-    # Target registers to create merged datasets for
+    # Target registers for merging
     target_registers = ["NB", "OB", "ID"]
 
+    # Statistics
     successful = 0
     skipped = 0
     failed = 0
@@ -947,24 +897,27 @@ def run_merge_mode(data_dir: str, config: ClusteringConfig) -> None:
     for language, files_and_registers in language_groups.items():
         print(f"\n{'#' * 60}")
         print(f"Processing language: {language}")
+        print(f"Available files: {len(files_and_registers)}")
         print(f"{'#' * 60}")
 
         for target_register in target_registers:
-            print(f"\nLooking for files containing register: {target_register}")
+            print(f"\nProcessing register: {target_register}")
 
-            # Filter files that contain the target register
-            files_to_merge = filter_files_by_target_register(
-                files_and_registers, target_register
+            # Filter files with minimum sample requirement
+            files_to_merge = filter_files_by_register(
+                files_and_registers, target_register, config.merge_min_samples
             )
 
             if not files_to_merge:
-                print(f"No files found for {language}-{target_register}")
+                print(
+                    f"No valid files for {language}-{target_register} (min {config.merge_min_samples} samples)"
+                )
                 skipped += 1
                 continue
 
-            print(f"Found {len(files_to_merge)} files to merge:")
+            print(f"Found {len(files_to_merge)} files meeting requirements:")
             for pkl_file, register in files_to_merge:
-                print(f"  - {os.path.basename(pkl_file)} ({register})")
+                print(f"  ✓ {os.path.basename(pkl_file)} ({register})")
 
             try:
                 result = process_merged_dataset(
@@ -975,41 +928,41 @@ def run_merge_mode(data_dir: str, config: ClusteringConfig) -> None:
                     failed += 1
                     print(f"✗ Failed: {result['error']}")
                 else:
-                    processed_any = False
-                    for embed_result in result["results"].values():
-                        if (
-                            "skipped" not in embed_result
-                            and "error" not in embed_result
-                        ):
-                            processed_any = True
-                            break
-                        elif "skipped" in embed_result:
-                            skipped += 1
+                    # Check if any embedding type was successfully processed
+                    processed_any = any(
+                        "error" not in embed_result and "skipped" not in embed_result
+                        for embed_result in result["results"].values()
+                    )
 
                     if processed_any:
                         successful += 1
                         print(f"✓ Successfully processed {language}-{target_register}")
                     else:
+                        skipped += 1
                         print(
                             f"○ All embeddings skipped for {language}-{target_register}"
                         )
 
             except Exception as e:
                 failed += 1
-                print(f"✗ Error processing {language}-{target_register}: {e}")
+                print(
+                    f"✗ Unexpected error processing {language}-{target_register}: {e}"
+                )
 
-    # Summary
+    # Final summary
     print(f"\n{'=' * 80}")
-    print("MERGE MODE PROCESSING SUMMARY")
+    print("MERGE MODE SUMMARY")
     print(f"{'=' * 80}")
     print(f"Successful: {successful}")
-    print(f"Skipped (too small): {skipped}")
+    print(f"Skipped (insufficient samples): {skipped}")
     print(f"Failed: {failed}")
+    print(f"Total attempted: {successful + skipped + failed}")
 
 
 def run_individual_mode(pkl_files: List[str], config: ClusteringConfig) -> None:
-    """Run clustering in individual file mode"""
+    """Run clustering on individual files"""
     print("Running in INDIVIDUAL mode")
+    print(f"Files to process: {len(pkl_files)}")
 
     successful = 0
     skipped = 0
@@ -1017,37 +970,36 @@ def run_individual_mode(pkl_files: List[str], config: ClusteringConfig) -> None:
 
     for i, pkl_file in enumerate(pkl_files, 1):
         print(f"\n{'#' * 80}")
-        print(f"PROCESSING FILE {i}/{len(pkl_files)}: {pkl_file}")
+        print(f"PROCESSING FILE {i}/{len(pkl_files)}: {os.path.basename(pkl_file)}")
         print(f"{'#' * 80}")
 
         try:
-            result = process_file(pkl_file, config)
+            result = process_single_file(pkl_file, config)
 
             if "error" in result:
                 failed += 1
                 print(f"✗ Failed: {result['error']}")
             else:
-                processed_any = False
-                for embed_result in result["results"].values():
-                    if "skipped" not in embed_result and "error" not in embed_result:
-                        processed_any = True
-                        break
-                    elif "skipped" in embed_result:
-                        skipped += 1
+                # Check if any embedding type was successfully processed
+                processed_any = any(
+                    "error" not in embed_result and "skipped" not in embed_result
+                    for embed_result in result["results"].values()
+                )
 
                 if processed_any:
                     successful += 1
-                    print(f"✓ Successfully processed {pkl_file}")
+                    print(f"✓ Successfully processed {os.path.basename(pkl_file)}")
                 else:
-                    print(f"○ All embeddings skipped for {pkl_file}")
+                    skipped += 1
+                    print(f"○ All embeddings skipped for {os.path.basename(pkl_file)}")
 
         except Exception as e:
             failed += 1
-            print(f"✗ Error processing {pkl_file}: {e}")
+            print(f"✗ Unexpected error processing {os.path.basename(pkl_file)}: {e}")
 
-    # Summary
+    # Final summary
     print(f"\n{'=' * 80}")
-    print("INDIVIDUAL MODE PROCESSING SUMMARY")
+    print("INDIVIDUAL MODE SUMMARY")
     print(f"{'=' * 80}")
     print(f"Total files: {len(pkl_files)}")
     print(f"Successful: {successful}")
@@ -1056,42 +1008,106 @@ def run_individual_mode(pkl_files: List[str], config: ClusteringConfig) -> None:
 
 
 def main():
-    """Main function"""
-    parser = argparse.ArgumentParser(description="Clustering analysis tool")
-    parser.add_argument(
-        "files", nargs="*", help="Pickle files to process (ignored in merge mode)"
+    """Main function with improved argument handling"""
+    parser = argparse.ArgumentParser(
+        description="Advanced clustering pipeline for text embeddings",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Process individual files
+  python clustering.py file1.pkl file2.pkl file3.pkl
+  
+  # Run merge mode with default directory
+  python clustering.py --merge
+  
+  # Run merge mode with custom directory
+  python clustering.py --merge --data-dir /path/to/embeddings/
+  
+  # Adjust minimum samples for merge mode
+  python clustering.py --merge --min-samples 200
+        """,
     )
-    parser.add_argument("--merge", action="store_true", help="Run in merge mode")
+
+    parser.add_argument(
+        "files", nargs="*", help="Pickle files to process (used in individual mode)"
+    )
+    parser.add_argument(
+        "--merge",
+        action="store_true",
+        help="Run in merge mode (combines files by language and register)",
+    )
     parser.add_argument(
         "--data-dir",
         default="../data/model_embeds/concat/xlm-r-reference/th-optimised/sm/",
-        help="Data directory for merge mode",
+        help="Data directory for merge mode (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--min-samples",
+        type=int,
+        default=100,
+        help="Minimum samples required for merge mode (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--dbcv-threshold",
+        type=float,
+        default=0.2,
+        help="DBCV quality threshold (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="clusters_output_final_3",
+        help="Base output directory (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        default="clusters_cache",
+        help="Cache directory for intermediate results (default: %(default)s)",
     )
 
     args = parser.parse_args()
 
-    # Setup configuration
-    config = ClusteringConfig()
+    # Create configuration
+    config = ClusteringConfig(
+        merge_min_samples=args.min_samples,
+        dbcv_threshold=args.dbcv_threshold,
+        output_base_dir=args.output_dir,
+        cache_dir=args.cache_dir,
+    )
+
+    print("Clustering Pipeline Configuration:")
+    print(f"  DBCV threshold: {config.dbcv_threshold}")
+    print(f"  Min dataset size: {config.min_dataset_size}")
+    print(f"  Merge mode min samples: {config.merge_min_samples}")
+    print(f"  Output directory: {config.output_base_dir}")
+    print(f"  Cache directory: {config.cache_dir}")
 
     if args.merge:
-        # Merge mode: automatically find and process files
+        # Merge mode
+        if not os.path.exists(args.data_dir):
+            print(f"Error: Data directory not found: {args.data_dir}")
+            sys.exit(1)
+
         run_merge_mode(args.data_dir, config)
     else:
-        # Individual mode: process specified files
+        # Individual mode
         if not args.files:
-            print("Usage: python script.py pickle1.pkl pickle2.pkl ...")
-            print("   or: python script.py --merge [--data-dir /path/to/data]")
+            print("Error: No files specified for individual mode")
+            print("Use --help for usage examples")
             sys.exit(1)
 
-        pkl_files = [f for f in args.files if os.path.exists(f)]
-        if not pkl_files:
-            print("ERROR: No valid pickle files found!")
+        # Validate files exist
+        valid_files = [f for f in args.files if os.path.exists(f)]
+        if not valid_files:
+            print("Error: No valid pickle files found")
             sys.exit(1)
 
-        print(f"Found {len(pkl_files)} valid pickle files to process")
-        run_individual_mode(pkl_files, config)
+        if len(valid_files) != len(args.files):
+            missing = set(args.files) - set(valid_files)
+            print(f"Warning: {len(missing)} files not found: {missing}")
 
-    print("\nProcessing complete!")
+        run_individual_mode(valid_files, config)
+
+    print("\n🎉 Processing complete!")
 
 
 if __name__ == "__main__":
