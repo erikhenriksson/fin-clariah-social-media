@@ -1056,7 +1056,7 @@ Examples:
     )
     parser.add_argument(
         "--output-dir",
-        default="clusters_output_final_3",
+        default="clusters_output_final_final",
         help="Base output directory (default: %(default)s)",
     )
     parser.add_argument(
