@@ -26,7 +26,7 @@ class ClusteringConfig:
         umap_min_dist_2d: float = 0.1,
         min_dataset_size: int = 1000,
         merge_min_samples: int = 100,  # New: minimum samples for merge mode
-        output_base_dir: str = "clusters_output_final_3",
+        output_base_dir: str = "clusters_output_final_final",
         cache_dir: str = "clusters_cache",
     ):
         self.dbcv_threshold = dbcv_threshold
