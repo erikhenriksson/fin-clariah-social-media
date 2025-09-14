@@ -1051,12 +1051,12 @@ Examples:
     parser.add_argument(
         "--dbcv-threshold",
         type=float,
-        default=0.2,
+        default=0.0,
         help="DBCV quality threshold (default: %(default)s)",
     )
     parser.add_argument(
         "--output-dir",
-        default="clusters_output_final_final",
+        default="clusters_output_final_final_0.0",
         help="Base output directory (default: %(default)s)",
     )
     parser.add_argument(
