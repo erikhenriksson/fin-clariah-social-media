@@ -15,6 +15,44 @@ def find_clustered_data_files():
     return files
 
 
+def detect_language_from_path(pickle_file: str) -> str:
+    """Detect language code from file path."""
+    path_lower = pickle_file.lower()
+
+    # Language code mapping
+    lang_codes = {
+        "en": "english",
+        "sv": "swedish",
+        "fi": "finnish",
+        "fr": "french",
+        "de": "german",
+        "es": "spanish",
+        "it": "italian",
+        "nl": "dutch",
+        "pt": "portuguese",
+        "ru": "russian",
+        "zh": "chinese",
+        "ja": "japanese",
+        "ko": "korean",
+        "ar": "arabic",
+    }
+
+    # Check for language codes in path
+    for code, lang_name in lang_codes.items():
+        if (
+            f"/{code}/" in path_lower
+            or f"_{code}_" in path_lower
+            or f"-{code}-" in path_lower
+        ):
+            return lang_name
+
+    # Default fallback
+    print(
+        f"Warning: Could not detect language from path {pickle_file}, defaulting to English"
+    )
+    return "english"
+
+
 def check_parsing_status(pickle_file: str) -> str:
     """
     Check if parsing is complete by checking if parsed.pkl exists and is valid.
@@ -135,87 +173,90 @@ def parse_pickle_file(pickle_file: str, trankit_pipeline):
         return False
 
 
-def parse_all_pickle_files(language_code: str = "english"):
-    """Parse all clustered_data.pkl files using Trankit."""
-
-    # Map language codes to Trankit language names
-    trankit_lang_map = {
-        "en": "english",
-        "fr": "french",
-        "sv": "swedish",
-        "de": "german",
-        "es": "spanish",
-        "it": "italian",
-    }
-
-    trankit_lang = trankit_lang_map.get(language_code, language_code)
+def parse_all_pickle_files():
+    """Parse all clustered_data.pkl files using Trankit with language detection."""
 
     # Find all pickle files
     pickle_files = find_clustered_data_files()
 
     if not pickle_files:
-        print("No clustered_data.pkl files found")
+        print("No files ending with 'last/clustered_data.pkl' found")
         return
 
-    # Initialize Trankit pipeline
-    print(f"Initializing Trankit pipeline for {trankit_lang}...")
-    try:
-        pipeline = trankit.Pipeline(trankit_lang, gpu=True)
-    except Exception as e:
-        print(f"Error initializing Trankit for '{trankit_lang}': {e}")
-        print("Trying without GPU...")
-        try:
-            pipeline = trankit.Pipeline(trankit_lang, gpu=False)
-        except Exception as e2:
-            print(f"Error initializing Trankit without GPU: {e2}")
-            print(
-                "Available languages can be checked with: import trankit; print(trankit.supported_langs)"
-            )
-            return
+    # Group files by detected language
+    files_by_language = {}
+    for pickle_file in pickle_files:
+        lang = detect_language_from_path(pickle_file)
+        if lang not in files_by_language:
+            files_by_language[lang] = []
+        files_by_language[lang].append(pickle_file)
 
-    # Process each pickle file
-    successful_parses = 0
-    failed_parses = 0
+    print(
+        f"Files grouped by language: {dict((k, len(v)) for k, v in files_by_language.items())}"
+    )
 
-    for pickle_file in tqdm(pickle_files, desc="Processing pickle files"):
+    # Process each language group
+    for trankit_lang, lang_files in files_by_language.items():
+        print(f"\n{'=' * 60}")
+        print(f"Processing {len(lang_files)} files with {trankit_lang} parser...")
+        print(f"{'=' * 60}")
+
+        # Initialize Trankit pipeline for this language
         try:
-            if parse_pickle_file(pickle_file, pipeline):
-                successful_parses += 1
-            else:
-                failed_parses += 1
+            pipeline = trankit.Pipeline(trankit_lang, gpu=True)
         except Exception as e:
-            print(f"Unexpected error with {pickle_file}: {e}")
-            failed_parses += 1
-
-            # Reinitialize pipeline on error (as in original code)
+            print(f"Error initializing Trankit for '{trankit_lang}': {e}")
+            print("Trying without GPU...")
             try:
-                pipeline = trankit.Pipeline(trankit_lang, gpu=True)
-            except:
-                try:
-                    pipeline = trankit.Pipeline(trankit_lang, gpu=False)
-                except:
-                    print("Failed to reinitialize pipeline, stopping")
-                    break
+                pipeline = trankit.Pipeline(trankit_lang, gpu=False)
+            except Exception as e2:
+                print(f"Error initializing Trankit without GPU: {e2}")
+                print(f"Skipping {len(lang_files)} files for language '{trankit_lang}'")
+                print(
+                    "Available languages can be checked with: import trankit; print(trankit.supported_langs)"
+                )
+                continue
 
-    print(f"\n{'=' * 60}")
-    print(f"Processing completed:")
-    print(f"  Successful: {successful_parses}")
-    print(f"  Failed: {failed_parses}")
-    print(f"  Total: {len(pickle_files)}")
-    print(f"{'=' * 60}")
+        # Process files for this language
+        successful_parses = 0
+        failed_parses = 0
+
+        for pickle_file in tqdm(lang_files, desc=f"Processing {trankit_lang} files"):
+            try:
+                if parse_pickle_file(pickle_file, pipeline):
+                    successful_parses += 1
+                else:
+                    failed_parses += 1
+            except Exception as e:
+                print(f"Unexpected error with {pickle_file}: {e}")
+                failed_parses += 1
+
+                # Reinitialize pipeline on error (as in original code)
+                try:
+                    pipeline = trankit.Pipeline(trankit_lang, gpu=True)
+                except:
+                    try:
+                        pipeline = trankit.Pipeline(trankit_lang, gpu=False)
+                    except:
+                        print(
+                            f"Failed to reinitialize pipeline for {trankit_lang}, skipping remaining files"
+                        )
+                        break
+
+        print(
+            f"Language {trankit_lang} completed - Success: {successful_parses}, Failed: {failed_parses}"
+        )
 
 
 def main():
     """Main function to process all pickle files."""
 
-    # You can change the language here
-    language = "english"  # Change to "fr", "sv", etc. as needed
-
     print(f"{'=' * 60}")
-    print(f"Processing all clustered_data.pkl files with {language} parser...")
+    print(f"Processing all files ending with 'last/clustered_data.pkl'...")
+    print(f"Language will be auto-detected from file paths")
     print(f"{'=' * 60}")
 
-    parse_all_pickle_files(language)
+    parse_all_pickle_files()
 
 
 if __name__ == "__main__":
