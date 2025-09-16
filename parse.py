@@ -83,6 +83,65 @@ def check_parsing_status(pickle_file: str) -> str:
         return "error"
 
 
+def process_single_text(
+    pickle_file: str,
+    text_content: str,
+    register_info: str,
+    cluster_id: str,
+    trankit_pipeline,
+):
+    """Process a single text and return success status."""
+    # Parse with Trankit
+    try:
+        parsed = trankit_pipeline(str(text_content))
+    except Exception as e:
+        print(f"Error parsing text in {pickle_file}: {e}")
+        return False
+
+    # Extract tokens from all sentences
+    parsed_rows = []
+
+    for sent_idx, sentence in enumerate(parsed["sentences"]):
+        for token in sentence["tokens"]:
+            # Define expected CoNLL-U columns in order
+            expected_columns = [
+                "id",
+                "text",
+                "lemma",
+                "upos",
+                "xpos",
+                "feats",
+                "head",
+                "deprel",
+                "deps",
+                "misc",
+            ]
+
+            # Start with metadata
+            parsed_row = {
+                "register": register_info,
+                "cluster_id": cluster_id,
+                "sentence_id": sent_idx,
+            }
+
+            # Add all expected token fields with defaults for missing keys
+            for col in expected_columns:
+                parsed_row[col] = token.get(col, "")
+
+            parsed_rows.append(parsed_row)
+
+    # Save parsed data as pickle
+    if parsed_rows:
+        output_file = os.path.join(os.path.dirname(pickle_file), "parsed.pkl")
+        with open(output_file, "wb") as f:
+            pickle.dump(parsed_rows, f)
+        print(f"Saved {len(parsed_rows)} tokens to {output_file}")
+        return True
+    else:
+        print(f"No tokens parsed for {pickle_file}")
+        return False
+
+
 def parse_pickle_file(pickle_file: str, trankit_pipeline):
     """Parse a single pickle file and save results."""
 
@@ -107,13 +166,100 @@ def parse_pickle_file(pickle_file: str, trankit_pipeline):
         with open(pickle_file, "rb") as f:
             data = pickle.load(f)
 
-        # Extract required fields
-        text_content = data.get("text", "")
-        register_info = data.get("register", "")
-        cluster_id = data.get("cluster_id", "")
+        # Handle different data structures
+        if isinstance(data, dict):
+            # Single dictionary case
+            text_content = data.get("text", "")
+            register_info = data.get("register", "")
+            cluster_id = data.get("cluster_id", "")
 
-        if not text_content:
-            print(f"Warning: No text content found in {pickle_file}")
+            if not text_content:
+                print(f"Warning: No text content found in {pickle_file}")
+                return False
+
+            # Process single text
+            return process_single_text(
+                pickle_file, text_content, register_info, cluster_id, trankit_pipeline
+            )
+
+        elif isinstance(data, list):
+            # List of dictionaries case
+            if not data:
+                print(f"Warning: Empty list in {pickle_file}")
+                return False
+
+            all_parsed_rows = []
+
+            for i, item in enumerate(data):
+                if not isinstance(item, dict):
+                    print(
+                        f"Warning: Item {i} in {pickle_file} is not a dictionary, skipping"
+                    )
+                    continue
+
+                text_content = item.get("text", "")
+                register_info = item.get("register", "")
+                cluster_id = item.get("cluster_id", "")
+
+                if not text_content:
+                    print(
+                        f"Warning: No text content found in item {i} of {pickle_file}, skipping"
+                    )
+                    continue
+
+                # Parse this item
+                try:
+                    parsed = trankit_pipeline(str(text_content))
+                except Exception as e:
+                    print(f"Error parsing text in item {i} of {pickle_file}: {e}")
+                    continue
+
+                # Extract tokens from all sentences for this item
+                for sent_idx, sentence in enumerate(parsed["sentences"]):
+                    for token in sentence["tokens"]:
+                        # Define expected CoNLL-U columns in order
+                        expected_columns = [
+                            "id",
+                            "text",
+                            "lemma",
+                            "upos",
+                            "xpos",
+                            "feats",
+                            "head",
+                            "deprel",
+                            "deps",
+                            "misc",
+                        ]
+
+                        # Start with metadata (include item index for list case)
+                        parsed_row = {
+                            "item_index": i,
+                            "register": register_info,
+                            "cluster_id": cluster_id,
+                            "sentence_id": sent_idx,
+                        }
+
+                        # Add all expected token fields with defaults for missing keys
+                        for col in expected_columns:
+                            parsed_row[col] = token.get(col, "")
+
+                        all_parsed_rows.append(parsed_row)
+
+            # Save all parsed data as pickle
+            if all_parsed_rows:
+                output_file = os.path.join(os.path.dirname(pickle_file), "parsed.pkl")
+                with open(output_file, "wb") as f:
+                    pickle.dump(all_parsed_rows, f)
+                print(
+                    f"Saved {len(all_parsed_rows)} tokens from {len(data)} items to {output_file}"
+                )
+                return True
+            else:
+                print(f"No tokens parsed for {pickle_file}")
+                return False
+
+        else:
+            print(f"Error: Unexpected data type {type(data)} in {pickle_file}")
             return False
 
         # Parse with Trankit
