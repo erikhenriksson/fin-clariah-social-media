@@ -142,6 +142,29 @@ def process_single_text(
         return False
 
 
+def check_cluster_diversity(data):
+    """
+    Check if data has more than one unique cluster_id.
+    Returns True if parsing should proceed, False if should skip.
+    """
+    if isinstance(data, dict):
+        # Single dictionary - always has only one cluster
+        return False
+    elif isinstance(data, list):
+        # Extract all cluster_ids
+        cluster_ids = set()
+        for item in data:
+            if isinstance(item, dict):
+                cluster_id = item.get("cluster_id", "")
+                if cluster_id:  # Only count non-empty cluster_ids
+                    cluster_ids.add(cluster_id)
+
+        # Return True only if more than 1 unique cluster
+        return len(cluster_ids) > 1
+    else:
+        return False
+
+
 def parse_pickle_file(pickle_file: str, trankit_pipeline):
     """Parse a single pickle file and save results."""
 
@@ -165,6 +188,11 @@ def parse_pickle_file(pickle_file: str, trankit_pipeline):
         # Load the pickle file
         with open(pickle_file, "rb") as f:
             data = pickle.load(f)
+
+        # Check if we need to parse (more than 1 unique cluster)
+        if not check_cluster_diversity(data):
+            print(f"⚠ {pickle_file} has only one unique cluster, skipping parsing")
+            return True  # Return True to indicate successful "processing" (skip)
 
         # Handle different data structures
         if isinstance(data, dict):
@@ -190,7 +218,12 @@ def parse_pickle_file(pickle_file: str, trankit_pipeline):
 
             all_parsed_rows = []
 
-            for i, item in enumerate(data):
+            for i, item in tqdm(
+                enumerate(data),
+                total=len(data),
+                desc=f"Processing items in {os.path.basename(pickle_file)}",
+                leave=False,
+            ):
                 if not isinstance(item, dict):
                     print(
                         f"Warning: Item {i} in {pickle_file} is not a dictionary, skipping"
