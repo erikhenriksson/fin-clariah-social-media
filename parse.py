@@ -383,11 +383,25 @@ def parse_all_pickle_files():
         # Initialize Trankit pipeline for this language
         try:
             pipeline = trankit.Pipeline(trankit_lang, gpu=True)
+            print(f"✓ GPU acceleration enabled for {trankit_lang}")
+
+            # Verify GPU is actually being used
+            import torch
+
+            if torch.cuda.is_available():
+                print(f"✓ CUDA available - GPU: {torch.cuda.get_device_name(0)}")
+                print(
+                    f"✓ GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB"
+                )
+            else:
+                print("⚠ CUDA not available - falling back to CPU")
+
         except Exception as e:
-            print(f"Error initializing Trankit for '{trankit_lang}': {e}")
+            print(f"Error initializing Trankit with GPU for '{trankit_lang}': {e}")
             print("Trying without GPU...")
             try:
                 pipeline = trankit.Pipeline(trankit_lang, gpu=False)
+                print(f"✓ CPU fallback enabled for {trankit_lang}")
             except Exception as e2:
                 print(f"Error initializing Trankit without GPU: {e2}")
                 print(f"Skipping {len(lang_files)} files for language '{trankit_lang}'")
@@ -413,9 +427,11 @@ def parse_all_pickle_files():
                 # Reinitialize pipeline on error (as in original code)
                 try:
                     pipeline = trankit.Pipeline(trankit_lang, gpu=True)
+                    print(f"✓ Pipeline reinitialized with GPU for {trankit_lang}")
                 except:
                     try:
                         pipeline = trankit.Pipeline(trankit_lang, gpu=False)
+                        print(f"⚠ Pipeline reinitialized with CPU for {trankit_lang}")
                     except:
                         print(
                             f"Failed to reinitialize pipeline for {trankit_lang}, skipping remaining files"
