@@ -1,4 +1,5 @@
 import glob
+import math
 import os
 import pickle
 from typing import Any, Dict, List
@@ -18,6 +19,9 @@ LANGUAGE_MODELS = {
 
 # Fallback to rule-based if models not available
 LANGUAGE_FALLBACKS = {"english": English, "swedish": Swedish, "finnish": Finnish}
+
+# Chunk size for output files
+CHUNK_SIZE = 1000
 
 
 def find_clustered_data_files() -> List[str]:
@@ -47,30 +51,82 @@ def detect_language_from_path(pickle_file: str) -> str:
 
 def check_lemmatization_status(pickle_file: str) -> str:
     """
-    Check if lemmatization is complete.
+    Check if lemmatization is complete by looking for chunk files.
 
     Returns:
         'complete' - lemmatization done, skip
-        'missing' - no lemma file, start fresh
-        'error' - corrupted file, restart
+        'missing' - no lemma files, start fresh
+        'partial' - some chunks exist, continue from where left off
+        'error' - corrupted files, restart
     """
-    lemma_file = os.path.join(os.path.dirname(pickle_file), "lemmas.pkl")
+    base_dir = os.path.dirname(pickle_file)
 
-    if not os.path.exists(lemma_file):
+    # Look for any lemma chunk files
+    lemma_pattern = os.path.join(base_dir, "lemmas_chunk_*.pkl")
+    existing_chunks = glob.glob(lemma_pattern)
+
+    if not existing_chunks:
         return "missing"
 
+    # Check if we have a completion marker
+    completion_file = os.path.join(base_dir, "lemmas_complete.txt")
+    if os.path.exists(completion_file):
+        return "complete"
+
+    # Check if existing chunks are valid
     try:
-        with open(lemma_file, "rb") as f:
-            data = pickle.load(f)
-
-        if isinstance(data, list) and len(data) > 0:
-            return "complete"
-        else:
-            return "error"
-
+        for chunk_file in existing_chunks:
+            with open(chunk_file, "rb") as f:
+                data = pickle.load(f)
+            if not isinstance(data, list) or len(data) == 0:
+                return "error"
+        return "partial"
     except Exception as e:
-        print(f"Error checking lemma file {lemma_file}: {e}")
+        print(f"Error checking lemma chunks in {base_dir}: {e}")
         return "error"
+
+
+def get_existing_chunk_count(pickle_file: str) -> int:
+    """Get the number of existing chunk files."""
+    base_dir = os.path.dirname(pickle_file)
+    lemma_pattern = os.path.join(base_dir, "lemmas_chunk_*.pkl")
+    existing_chunks = glob.glob(lemma_pattern)
+    return len(existing_chunks)
+
+
+def save_lemma_chunk(lemmas: List[Dict], base_dir: str, chunk_num: int):
+    """Save a chunk of lemmas to file."""
+    chunk_file = os.path.join(base_dir, f"lemmas_chunk_{chunk_num:04d}.pkl")
+    with open(chunk_file, "wb") as f:
+        pickle.dump(lemmas, f)
+    return chunk_file
+
+
+def mark_completion(base_dir: str, total_chunks: int, total_lemmas: int):
+    """Create a completion marker file with metadata."""
+    completion_file = os.path.join(base_dir, "lemmas_complete.txt")
+    with open(completion_file, "w") as f:
+        f.write(f"Lemmatization completed\n")
+        f.write(f"Total chunks: {total_chunks}\n")
+        f.write(f"Total lemmas: {total_lemmas}\n")
+        f.write(f"Chunk size: {CHUNK_SIZE}\n")
+
+
+def clean_partial_files(base_dir: str):
+    """Remove partial lemmatization files to start fresh."""
+    lemma_pattern = os.path.join(base_dir, "lemmas_chunk_*.pkl")
+    completion_file = os.path.join(base_dir, "lemmas_complete.txt")
+
+    for file in glob.glob(lemma_pattern):
+        try:
+            os.remove(file)
+        except:
+            pass
+
+    try:
+        os.remove(completion_file)
+    except:
+        pass
 
 
 def load_spacy_model(language: str):
@@ -134,7 +190,9 @@ def has_multiple_clusters(data) -> bool:
 
 
 def lemmatize_pickle_file(pickle_file: str, nlp) -> bool:
-    """Lemmatize a single pickle file."""
+    """Lemmatize a single pickle file with chunked output."""
+
+    base_dir = os.path.dirname(pickle_file)
 
     # Check if already processed
     status = check_lemmatization_status(pickle_file)
@@ -143,12 +201,14 @@ def lemmatize_pickle_file(pickle_file: str, nlp) -> bool:
         print(f"✓ {pickle_file} already lemmatized, skipping")
         return True
     elif status == "error":
-        print(f"⚠ {pickle_file} has corrupted lemma file, restarting")
-        lemma_file = os.path.join(os.path.dirname(pickle_file), "lemmas.pkl")
-        try:
-            os.remove(lemma_file)
-        except:
-            pass
+        print(f"⚠ {pickle_file} has corrupted lemma files, restarting")
+        clean_partial_files(base_dir)
+        start_from_chunk = 0
+    elif status == "partial":
+        start_from_chunk = get_existing_chunk_count(pickle_file)
+        print(f"→ Resuming {pickle_file} from chunk {start_from_chunk}")
+    else:  # missing
+        start_from_chunk = 0
 
     print(f"→ Lemmatizing {pickle_file}")
 
@@ -162,11 +222,9 @@ def lemmatize_pickle_file(pickle_file: str, nlp) -> bool:
             print(f"⚠ {pickle_file} has only one unique cluster, skipping")
             return True
 
-        all_lemmas = []
-
         # Handle different data structures
         if isinstance(data, dict):
-            # Single dictionary
+            # Single dictionary - process as single chunk
             text_content = data.get("text", "")
             if not text_content:
                 print(f"Warning: No text in {pickle_file}")
@@ -174,6 +232,7 @@ def lemmatize_pickle_file(pickle_file: str, nlp) -> bool:
 
             lemmas = lemmatize_text(text_content, nlp)
 
+            chunk_lemmas = []
             for lemma_info in lemmas:
                 lemma_row = {
                     "register": data.get("register", ""),
@@ -181,48 +240,76 @@ def lemmatize_pickle_file(pickle_file: str, nlp) -> bool:
                     "original": lemma_info["original"],
                     "lemma": lemma_info["lemma"],
                 }
-                all_lemmas.append(lemma_row)
+                chunk_lemmas.append(lemma_row)
+
+            if chunk_lemmas:
+                save_lemma_chunk(chunk_lemmas, base_dir, 0)
+                mark_completion(base_dir, 1, len(chunk_lemmas))
+                print(f"Saved {len(chunk_lemmas)} lemmas in 1 chunk")
+                return True
 
         elif isinstance(data, list):
-            # List of dictionaries
-            for i, item in tqdm(
-                enumerate(data),
-                total=len(data),
-                desc=f"Processing {os.path.basename(pickle_file)}",
-                leave=False,
-            ):
-                if not isinstance(item, dict):
-                    continue
+            # List of dictionaries - process in chunks
+            total_items = len(data)
+            total_chunks = math.ceil(total_items / CHUNK_SIZE)
+            total_lemmas_processed = 0
 
-                text_content = item.get("text", "")
-                if not text_content:
-                    continue
+            print(
+                f"Processing {total_items} items in {total_chunks} chunks of {CHUNK_SIZE}"
+            )
 
-                lemmas = lemmatize_text(text_content, nlp)
+            # Skip already processed chunks
+            items_to_skip = start_from_chunk * CHUNK_SIZE
 
-                for lemma_info in lemmas:
-                    lemma_row = {
-                        "item_index": i,
-                        "register": item.get("register", ""),
-                        "cluster_id": item.get("cluster_id", ""),
-                        "original": lemma_info["original"],
-                        "lemma": lemma_info["lemma"],
-                    }
-                    all_lemmas.append(lemma_row)
+            for chunk_num in range(start_from_chunk, total_chunks):
+                start_idx = chunk_num * CHUNK_SIZE
+                end_idx = min(start_idx + CHUNK_SIZE, total_items)
+                chunk_data = data[start_idx:end_idx]
+
+                chunk_lemmas = []
+
+                for i, item in tqdm(
+                    enumerate(chunk_data, start=start_idx),
+                    total=len(chunk_data),
+                    desc=f"Chunk {chunk_num + 1}/{total_chunks}",
+                    leave=False,
+                ):
+                    if not isinstance(item, dict):
+                        continue
+
+                    text_content = item.get("text", "")
+                    if not text_content:
+                        continue
+
+                    lemmas = lemmatize_text(text_content, nlp)
+
+                    for lemma_info in lemmas:
+                        lemma_row = {
+                            "item_index": i,
+                            "register": item.get("register", ""),
+                            "cluster_id": item.get("cluster_id", ""),
+                            "original": lemma_info["original"],
+                            "lemma": lemma_info["lemma"],
+                        }
+                        chunk_lemmas.append(lemma_row)
+
+                # Save chunk
+                if chunk_lemmas:
+                    chunk_file = save_lemma_chunk(chunk_lemmas, base_dir, chunk_num)
+                    total_lemmas_processed += len(chunk_lemmas)
+                    print(
+                        f"Saved chunk {chunk_num + 1}/{total_chunks}: {len(chunk_lemmas)} lemmas to {os.path.basename(chunk_file)}"
+                    )
+
+            # Mark completion
+            mark_completion(base_dir, total_chunks, total_lemmas_processed)
+            print(
+                f"Completed! Total: {total_lemmas_processed} lemmas in {total_chunks} chunks"
+            )
+            return True
 
         else:
             print(f"Error: Unexpected data type {type(data)} in {pickle_file}")
-            return False
-
-        # Save results
-        if all_lemmas:
-            output_file = os.path.join(os.path.dirname(pickle_file), "lemmas.pkl")
-            with open(output_file, "wb") as f:
-                pickle.dump(all_lemmas, f)
-            print(f"Saved {len(all_lemmas)} lemmas to {output_file}")
-            return True
-        else:
-            print(f"No lemmas generated for {pickle_file}")
             return False
 
     except Exception as e:
@@ -279,8 +366,9 @@ def lemmatize_all_files():
 
 def main():
     """Main function."""
-    print("Fast Lemmatizer for Swedish, English, Finnish")
+    print("Fast Chunked Lemmatizer for Swedish, English, Finnish")
     print("=" * 50)
+    print(f"Chunk size: {CHUNK_SIZE} documents per output file")
     print("Required spaCy models (install if missing):")
     print("  python -m spacy download en_core_web_sm")
     print("  python -m spacy download sv_core_news_sm")
